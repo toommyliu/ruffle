@@ -291,6 +291,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         scale: f32,
     ) -> Mesh {
         let shape_id = shape.id;
+        let flat = shape.flat;
         let lyon_mesh =
             self.shape_tessellator
                 .tessellate_shape_with_scale(shape, bitmap_source, scale);
@@ -352,6 +353,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             draws,
             vertex_buffer,
             index_buffer,
+            flat,
         }
     }
 
@@ -1232,6 +1234,7 @@ async fn request_device(
     let optional_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         | wgpu::Features::TEXTURE_COMPRESSION_BC
         | wgpu::Features::FLOAT32_FILTERABLE
+        | wgpu::Features::DUAL_SOURCE_BLENDING
         | GpuProfiler::ALL_WGPU_TIMER_FEATURES;
 
     features |= optional_features & adapter.features();

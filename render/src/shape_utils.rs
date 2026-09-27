@@ -136,15 +136,28 @@ pub struct DistilledShape<'a> {
     pub shape_bounds: Rectangle<Twips>,
     pub edge_bounds: Rectangle<Twips>,
     pub id: CharacterId,
+    /// No two paths overlap: fills from a single style layer, and no strokes.
+    pub flat: bool,
 }
 
 impl<'a> From<&'a swf::Shape> for DistilledShape<'a> {
     fn from(shape: &'a Shape) -> Self {
+        let paths = ShapeConverter::from_shape(shape).into_commands();
+        // Fills within one style layer partition the plane, but a new style
+        // list starts a new layer, which may overlap the previous ones.
+        let single_layer = !shape.shape.iter().any(|record| {
+            matches!(record, ShapeRecord::StyleChange(change) if change.new_styles.is_some())
+        });
+        let flat = single_layer
+            && paths
+                .iter()
+                .all(|path| matches!(path, DrawPath::Fill { .. }));
         Self {
-            paths: ShapeConverter::from_shape(shape).into_commands(),
+            paths,
             shape_bounds: shape.shape_bounds,
             edge_bounds: shape.edge_bounds,
             id: shape.id,
+            flat,
         }
     }
 }

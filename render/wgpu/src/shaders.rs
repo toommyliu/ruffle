@@ -17,6 +17,7 @@ pub struct Shaders {
     pub copy_shader: wgpu::ShaderModule,
     pub alpha_mask_shader: wgpu::ShaderModule,
     pub blend_shaders: EnumMap<ComplexBlend, wgpu::ShaderModule>,
+    pub multiply: Option<MultiplyShaders>,
     pub color_matrix_filter: wgpu::ShaderModule,
     pub blur_filter: wgpu::ShaderModule,
     pub glow_filter: wgpu::ShaderModule,
@@ -24,9 +25,39 @@ pub struct Shaders {
     pub displacement_map_filter: wgpu::ShaderModule,
 }
 
+#[derive(Debug)]
+pub struct MultiplyShaders {
+    pub color: wgpu::ShaderModule,
+    pub gradient: wgpu::ShaderModule,
+    pub bitmap: wgpu::ShaderModule,
+}
+
 impl Shaders {
     pub fn new(device: &wgpu::Device) -> Self {
         let max_transforms = transforms_per_draw(&device.limits());
+        let multiply = device
+            .features()
+            .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
+            .then(|| MultiplyShaders {
+                color: make_multiply_shader(
+                    device,
+                    "color.wgsl",
+                    include_str!("../shaders/color.wgsl"),
+                    max_transforms,
+                ),
+                gradient: make_multiply_shader(
+                    device,
+                    "gradient.wgsl",
+                    include_str!("../shaders/gradient.wgsl"),
+                    max_transforms,
+                ),
+                bitmap: make_multiply_shader(
+                    device,
+                    "bitmap.wgsl",
+                    include_str!("../shaders/bitmap.wgsl"),
+                    max_transforms,
+                ),
+            });
         let color_shader = make_shader(
             device,
             "color.wgsl",
@@ -102,6 +133,7 @@ impl Shaders {
             copy_shader,
             alpha_mask_shader,
             blend_shaders,
+            multiply,
             color_matrix_filter,
             blur_filter,
             glow_filter,
@@ -125,6 +157,35 @@ fn make_shader(
         ),
     })
 }
+fn make_multiply_shader(
+    device: &wgpu::Device,
+    name: &str,
+    source: &str,
+    max_transforms: u64,
+) -> wgpu::ShaderModule {
+    const ENTRY_POINT: &str =
+        "@fragment\nfn main_fragment(in: VertexOutput) -> @location(0) vec4<f32> {";
+    assert!(
+        source.contains(ENTRY_POINT),
+        "{name} must have the standard fragment entry point"
+    );
+    let source = source.replace(
+        ENTRY_POINT,
+        "fn shape_color(in: VertexOutput) -> vec4<f32> {",
+    );
+    let common = include_str!("../shaders/common.wgsl");
+    let multiply = include_str!("../shaders/multiply_direct.wgsl");
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: create_debug_label!("Shader {name} (multiply)").as_deref(),
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "enable dual_source_blending;\n{common}\nconst max_transforms = {max_transforms};\n{source}\n{multiply}"
+            )
+            .into(),
+        ),
+    })
+}
+
 fn make_filter_shader(device: &wgpu::Device, name: &str, source: &str) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: create_debug_label!("Shader {name}").as_deref(),

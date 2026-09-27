@@ -66,7 +66,7 @@ impl BlendType {
     }
 }
 
-#[derive(Enum, Debug, Copy, Clone)]
+#[derive(Enum, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TrivialBlend {
     Normal,
     Add,
@@ -102,6 +102,52 @@ impl TrivialBlend {
                     operation: wgpu::BlendOperation::ReverseSubtract,
                 },
                 alpha: wgpu::BlendComponent::OVER,
+            },
+        }
+    }
+}
+
+/// Only valid when the drawn triangles don't overlap each other.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DirectBlend {
+    Trivial(TrivialBlend),
+    /// Needs `Features::DUAL_SOURCE_BLENDING`; see `shaders/multiply_direct.wgsl`.
+    Multiply,
+}
+
+impl DirectBlend {
+    pub const NORMAL: DirectBlend = DirectBlend::Trivial(TrivialBlend::Normal);
+
+    pub fn for_layer(mode: &RenderBlendMode, dual_source_blending: bool) -> Option<Self> {
+        match mode {
+            RenderBlendMode::Builtin(BlendMode::Normal | BlendMode::Layer) => Some(Self::NORMAL),
+            RenderBlendMode::Builtin(BlendMode::Add) => {
+                Some(DirectBlend::Trivial(TrivialBlend::Add))
+            }
+            RenderBlendMode::Builtin(BlendMode::Subtract) => {
+                Some(DirectBlend::Trivial(TrivialBlend::Subtract))
+            }
+            RenderBlendMode::Builtin(BlendMode::Screen) => {
+                Some(DirectBlend::Trivial(TrivialBlend::Screen))
+            }
+            RenderBlendMode::Builtin(BlendMode::Multiply) if dual_source_blending => {
+                Some(DirectBlend::Multiply)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn multiply_blend_state() -> wgpu::BlendState {
+        wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                dst_factor: wgpu::BlendFactor::Src1,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
             },
         }
     }

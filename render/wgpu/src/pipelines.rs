@@ -1,4 +1,4 @@
-use crate::blend::{ComplexBlend, TrivialBlend};
+use crate::blend::{ComplexBlend, DirectBlend, TrivialBlend};
 use crate::layouts::BindLayouts;
 use crate::shaders::Shaders;
 use crate::{MaskState, PosColorVertex, PosUvVertex, PosVertex};
@@ -42,7 +42,7 @@ pub struct ShapePipeline {
 
 #[derive(Debug)]
 pub struct Pipelines {
-    pub color: ShapePipeline,
+    color: EnumMap<TrivialBlend, ShapePipeline>,
     pub lines: ShapePipeline,
     /// Renders a bitmap without any blending, and does
     /// not write to the alpha channel. This is used for
@@ -53,10 +53,18 @@ pub struct Pipelines {
     /// using a stencil buffer, but we don't want to write to it
     /// or use it in any way.
     pub bitmap_opaque_dummy_stencil: wgpu::RenderPipeline,
-    pub bitmap: EnumMap<TrivialBlend, ShapePipeline>,
-    pub gradients: ShapePipeline,
+    bitmap: EnumMap<TrivialBlend, ShapePipeline>,
+    gradients: EnumMap<TrivialBlend, ShapePipeline>,
     pub complex_blends: EnumMap<ComplexBlend, ShapePipeline>,
     pub alpha_mask: ShapePipeline,
+    multiply: Option<MultiplyPipelines>,
+}
+
+#[derive(Debug)]
+struct MultiplyPipelines {
+    color: ShapePipeline,
+    gradient: ShapePipeline,
+    bitmap: ShapePipeline,
 }
 
 impl ShapePipeline {
@@ -83,6 +91,33 @@ impl ShapePipeline {
 }
 
 impl Pipelines {
+    pub fn color(&self, blend: DirectBlend) -> &ShapePipeline {
+        match blend {
+            DirectBlend::Trivial(blend) => &self.color[blend],
+            DirectBlend::Multiply => &self.multiply().color,
+        }
+    }
+
+    pub fn gradient(&self, blend: DirectBlend) -> &ShapePipeline {
+        match blend {
+            DirectBlend::Trivial(blend) => &self.gradients[blend],
+            DirectBlend::Multiply => &self.multiply().gradient,
+        }
+    }
+
+    pub fn bitmap(&self, blend: DirectBlend) -> &ShapePipeline {
+        match blend {
+            DirectBlend::Trivial(blend) => &self.bitmap[blend],
+            DirectBlend::Multiply => &self.multiply().bitmap,
+        }
+    }
+
+    fn multiply(&self) -> &MultiplyPipelines {
+        self.multiply
+            .as_ref()
+            .expect("DirectBlend::Multiply requires dual-source blending")
+    }
+
     pub fn new(
         device: &wgpu::Device,
         shaders: &Shaders,
@@ -92,18 +127,20 @@ impl Pipelines {
     ) -> Self {
         let colort_bindings = vec![Some(&bind_layouts.globals), Some(&bind_layouts.transforms)];
 
-        let color_pipelines = create_shape_pipeline(
-            "Color",
-            device,
-            format,
-            &shaders.color_shader,
-            msaa_sample_count,
-            &VERTEX_BUFFERS_DESCRIPTION_COLOR,
-            &colort_bindings,
-            BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            0,
-            PrimitiveTopology::TriangleList,
-        );
+        let color_pipelines = EnumMap::from_fn(|blend: TrivialBlend| {
+            create_shape_pipeline(
+                &format!("Color ({blend:?})"),
+                device,
+                format,
+                &shaders.color_shader,
+                msaa_sample_count,
+                &VERTEX_BUFFERS_DESCRIPTION_COLOR,
+                &colort_bindings,
+                blend.blend_state(),
+                0,
+                PrimitiveTopology::TriangleList,
+            )
+        });
 
         let lines_pipelines = create_shape_pipeline(
             "Lines",
@@ -124,18 +161,20 @@ impl Pipelines {
             Some(&bind_layouts.gradient),
         ];
 
-        let gradient_pipeline = create_shape_pipeline(
-            "Gradient",
-            device,
-            format,
-            &shaders.gradient_shader,
-            msaa_sample_count,
-            &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
-            &gradient_bindings,
-            BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            0,
-            PrimitiveTopology::TriangleList,
-        );
+        let gradient_pipelines = EnumMap::from_fn(|blend: TrivialBlend| {
+            create_shape_pipeline(
+                &format!("Gradient ({blend:?})"),
+                device,
+                format,
+                &shaders.gradient_shader,
+                msaa_sample_count,
+                &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
+                &gradient_bindings,
+                blend.blend_state(),
+                0,
+                PrimitiveTopology::TriangleList,
+            )
+        });
 
         let complex_blend_bindings =
             vec![Some(&bind_layouts.globals), None, Some(&bind_layouts.blend)];
@@ -230,6 +269,43 @@ impl Pipelines {
             PrimitiveTopology::TriangleList,
         ));
 
+        let multiply = shaders.multiply.as_ref().map(|shaders| {
+            let pipeline = |name: &str, shader, vertex_buffers, bindings| {
+                create_shape_pipeline(
+                    &format!("{name} (Multiply)"),
+                    device,
+                    format,
+                    shader,
+                    msaa_sample_count,
+                    vertex_buffers,
+                    bindings,
+                    DirectBlend::multiply_blend_state(),
+                    0,
+                    PrimitiveTopology::TriangleList,
+                )
+            };
+            MultiplyPipelines {
+                color: pipeline(
+                    "Color",
+                    &shaders.color,
+                    &VERTEX_BUFFERS_DESCRIPTION_COLOR,
+                    &colort_bindings,
+                ),
+                gradient: pipeline(
+                    "Gradient",
+                    &shaders.gradient,
+                    &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
+                    &gradient_bindings,
+                ),
+                bitmap: pipeline(
+                    "Bitmap",
+                    &shaders.bitmap,
+                    &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
+                    &bitmap_blend_bindings,
+                ),
+            }
+        });
+
         let alpha_mask_bindings = vec![
             Some(&bind_layouts.globals),
             Some(&bind_layouts.transforms),
@@ -255,9 +331,10 @@ impl Pipelines {
             bitmap: bitmap_pipelines,
             bitmap_opaque,
             bitmap_opaque_dummy_stencil: bitmap_opaque_dummy_depth,
-            gradients: gradient_pipeline,
+            gradients: gradient_pipelines,
             complex_blends: complex_blend_pipelines,
             alpha_mask: alpha_mask_pipeline,
+            multiply,
         }
     }
 }

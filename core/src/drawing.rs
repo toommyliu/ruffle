@@ -310,6 +310,7 @@ impl Drawing {
                 shape_bounds: self.shape_bounds,
                 edge_bounds: self.edge_bounds,
                 id: 0,
+                flat: false,
             };
             renderer.register_shape(shape, self)
         });
