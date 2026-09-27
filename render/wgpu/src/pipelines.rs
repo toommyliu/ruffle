@@ -58,6 +58,7 @@ pub struct Pipelines {
     pub complex_blends: EnumMap<ComplexBlend, ShapePipeline>,
     pub alpha_mask: ShapePipeline,
     multiply: Option<MultiplyPipelines>,
+    complex_direct: MultiplyPipelines,
 }
 
 #[derive(Debug)]
@@ -95,6 +96,7 @@ impl Pipelines {
         match blend {
             DirectBlend::Trivial(blend) => &self.color[blend],
             DirectBlend::Multiply => &self.multiply().color,
+            DirectBlend::Complex(_) => &self.complex_direct.color,
         }
     }
 
@@ -102,6 +104,7 @@ impl Pipelines {
         match blend {
             DirectBlend::Trivial(blend) => &self.gradients[blend],
             DirectBlend::Multiply => &self.multiply().gradient,
+            DirectBlend::Complex(_) => &self.complex_direct.gradient,
         }
     }
 
@@ -109,6 +112,7 @@ impl Pipelines {
         match blend {
             DirectBlend::Trivial(blend) => &self.bitmap[blend],
             DirectBlend::Multiply => &self.multiply().bitmap,
+            DirectBlend::Complex(_) => &self.complex_direct.bitmap,
         }
     }
 
@@ -306,6 +310,63 @@ impl Pipelines {
             }
         });
 
+        let complex_direct = {
+            let parent = Some(&bind_layouts.parent_copy);
+            let color_bindings = vec![
+                Some(&bind_layouts.globals),
+                Some(&bind_layouts.transforms),
+                None,
+                parent,
+            ];
+            let gradient_bindings = vec![
+                Some(&bind_layouts.globals),
+                Some(&bind_layouts.transforms),
+                Some(&bind_layouts.gradient),
+                parent,
+            ];
+            let bitmap_bindings = vec![
+                Some(&bind_layouts.globals),
+                Some(&bind_layouts.transforms),
+                Some(&bind_layouts.bitmap),
+                parent,
+            ];
+            let shaders = &shaders.complex_direct;
+            let pipeline = |name: &str, shader, vertex_buffers, bindings: &[_]| {
+                create_shape_pipeline(
+                    &format!("{name} (complex blend)"),
+                    device,
+                    format,
+                    shader,
+                    msaa_sample_count,
+                    vertex_buffers,
+                    bindings,
+                    BlendState::REPLACE,
+                    0,
+                    PrimitiveTopology::TriangleList,
+                )
+            };
+            MultiplyPipelines {
+                color: pipeline(
+                    "Color",
+                    &shaders.color,
+                    &VERTEX_BUFFERS_DESCRIPTION_COLOR,
+                    &color_bindings,
+                ),
+                gradient: pipeline(
+                    "Gradient",
+                    &shaders.gradient,
+                    &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
+                    &gradient_bindings,
+                ),
+                bitmap: pipeline(
+                    "Bitmap",
+                    &shaders.bitmap,
+                    &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
+                    &bitmap_bindings,
+                ),
+            }
+        };
+
         let alpha_mask_bindings = vec![
             Some(&bind_layouts.globals),
             Some(&bind_layouts.transforms),
@@ -335,6 +396,7 @@ impl Pipelines {
             complex_blends: complex_blend_pipelines,
             alpha_mask: alpha_mask_pipeline,
             multiply,
+            complex_direct,
         }
     }
 }

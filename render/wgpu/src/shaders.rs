@@ -18,6 +18,7 @@ pub struct Shaders {
     pub alpha_mask_shader: wgpu::ShaderModule,
     pub blend_shaders: EnumMap<ComplexBlend, wgpu::ShaderModule>,
     pub multiply: Option<MultiplyShaders>,
+    pub complex_direct: MultiplyShaders,
     pub color_matrix_filter: wgpu::ShaderModule,
     pub blur_filter: wgpu::ShaderModule,
     pub glow_filter: wgpu::ShaderModule,
@@ -58,6 +59,23 @@ impl Shaders {
                     max_transforms,
                 ),
             });
+        let complex_direct = {
+            let variant = |name, source| {
+                make_shape_variant(
+                    device,
+                    name,
+                    source,
+                    max_transforms,
+                    "",
+                    include_str!("../shaders/complex_direct.wgsl"),
+                )
+            };
+            MultiplyShaders {
+                color: variant("color.wgsl", include_str!("../shaders/color.wgsl")),
+                gradient: variant("gradient.wgsl", include_str!("../shaders/gradient.wgsl")),
+                bitmap: variant("bitmap.wgsl", include_str!("../shaders/bitmap.wgsl")),
+            }
+        };
         let color_shader = make_shader(
             device,
             "color.wgsl",
@@ -134,6 +152,7 @@ impl Shaders {
             alpha_mask_shader,
             blend_shaders,
             multiply,
+            complex_direct,
             color_matrix_filter,
             blur_filter,
             glow_filter,
@@ -163,6 +182,25 @@ fn make_multiply_shader(
     source: &str,
     max_transforms: u64,
 ) -> wgpu::ShaderModule {
+    make_shape_variant(
+        device,
+        name,
+        source,
+        max_transforms,
+        "enable dual_source_blending;",
+        include_str!("../shaders/multiply_direct.wgsl"),
+    )
+}
+
+/// `prelude` goes first: WGSL requires `enable` directives before anything else.
+fn make_shape_variant(
+    device: &wgpu::Device,
+    name: &str,
+    source: &str,
+    max_transforms: u64,
+    prelude: &str,
+    fragment: &str,
+) -> wgpu::ShaderModule {
     const ENTRY_POINT: &str =
         "@fragment\nfn main_fragment(in: VertexOutput) -> @location(0) vec4<f32> {";
     assert!(
@@ -174,12 +212,11 @@ fn make_multiply_shader(
         "fn shape_color(in: VertexOutput) -> vec4<f32> {",
     );
     let common = include_str!("../shaders/common.wgsl");
-    let multiply = include_str!("../shaders/multiply_direct.wgsl");
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: create_debug_label!("Shader {name} (multiply)").as_deref(),
+        label: create_debug_label!("Shader {name} (direct blend)").as_deref(),
         source: wgpu::ShaderSource::Wgsl(
             format!(
-                "enable dual_source_blending;\n{common}\nconst max_transforms = {max_transforms};\n{source}\n{multiply}"
+                "{prelude}\n{common}\nconst max_transforms = {max_transforms};\n{source}\n{fragment}"
             )
             .into(),
         ),

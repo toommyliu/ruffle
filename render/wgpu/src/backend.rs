@@ -295,6 +295,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let lyon_mesh =
             self.shape_tessellator
                 .tessellate_shape_with_scale(shape, bitmap_source, scale);
+        let bounds = vertex_bounds(&lyon_mesh);
 
         let mut draws = Vec::with_capacity(lyon_mesh.draws.len());
         let mut uniform_buffer = BufferBuilder::new(
@@ -354,6 +355,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             vertex_buffer,
             index_buffer,
             flat,
+            bounds,
         }
     }
 
@@ -1394,5 +1396,23 @@ impl ActiveFrame {
         {
             self.submit_direct(descriptors);
         }
+    }
+}
+
+fn vertex_bounds(mesh: &ruffle_render::tessellator::Mesh) -> swf::Rectangle<swf::Twips> {
+    let mut min = (f32::INFINITY, f32::INFINITY);
+    let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for vertex in mesh.draws.iter().flat_map(|draw| &draw.vertices) {
+        min = (min.0.min(vertex.x), min.1.min(vertex.y));
+        max = (max.0.max(vertex.x), max.1.max(vertex.y));
+    }
+    if min.0 > max.0 {
+        return Default::default();
+    }
+    swf::Rectangle {
+        x_min: swf::Twips::from_pixels(min.0.into()),
+        y_min: swf::Twips::from_pixels(min.1.into()),
+        x_max: swf::Twips::from_pixels(max.0.into()),
+        y_max: swf::Twips::from_pixels(max.1.into()),
     }
 }

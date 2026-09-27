@@ -10,6 +10,7 @@ pub struct BindLayouts {
     pub gradient: wgpu::BindGroupLayout,
     pub blend: wgpu::BindGroupLayout,
     pub alpha_mask: wgpu::BindGroupLayout,
+    pub parent_copy: wgpu::BindGroupLayout,
 }
 
 impl BindLayouts {
@@ -172,6 +173,32 @@ impl BindLayouts {
             label: alpha_mask_bind_layout_label.as_deref(),
         });
 
+        let parent_copy = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                },
+            ],
+            label: create_debug_label!("Parent copy bind group").as_deref(),
+        });
+
         Self {
             globals,
             transforms,
@@ -179,6 +206,7 @@ impl BindLayouts {
             gradient,
             blend,
             alpha_mask,
+            parent_copy,
         }
     }
 }

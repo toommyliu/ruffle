@@ -126,6 +126,7 @@ impl Surface {
 
         let mut num_masks = 0;
         let mut mask_state = MaskState::NoMask;
+        let mut parent_copy: Option<wgpu::BindGroup> = None;
         let chunks = chunk_blends(
             commands,
             descriptors,
@@ -186,6 +187,7 @@ impl Surface {
                         num_masks,
                         mask_state,
                         needs_stencil,
+                        parent_copy.as_ref(),
                     );
 
                     for command in &chunk {
@@ -194,6 +196,40 @@ impl Surface {
 
                     num_masks = renderer.num_masks();
                     mask_state = renderer.mask_state();
+                }
+                Chunk::CopyParent { region } => {
+                    let blend_buffer = target.update_blend_buffer_region(
+                        descriptors,
+                        texture_pool,
+                        draw_encoder,
+                        region,
+                    );
+                    parent_copy.get_or_insert_with(|| {
+                        descriptors
+                            .device
+                            .create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: create_debug_label!("Parent copy binds").as_deref(),
+                                layout: &descriptors.bind_layouts.parent_copy,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            blend_buffer.view(),
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Buffer(
+                                            wgpu::BufferBinding {
+                                                buffer: &descriptors.complex_direct_modes,
+                                                offset: 0,
+                                                size: wgpu::BufferSize::new(16),
+                                            },
+                                        ),
+                                    },
+                                ],
+                            })
+                    });
                 }
                 Chunk::Blend {
                     texture,

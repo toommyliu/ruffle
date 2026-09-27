@@ -20,6 +20,7 @@ pub struct Mesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub flat: bool,
+    pub bounds: swf::Rectangle<swf::Twips>,
 }
 
 impl ShapeHandleImpl for Mesh {}

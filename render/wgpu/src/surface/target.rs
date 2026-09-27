@@ -428,6 +428,56 @@ impl CommandTarget {
         blend_buffer
     }
 
+    pub fn update_blend_buffer_region(
+        &self,
+        descriptors: &Descriptors,
+        pool: &mut TexturePool,
+        encoder: &mut wgpu::CommandEncoder,
+        region: ruffle_render::bitmap::PixelRegion,
+    ) -> &BlendBuffer {
+        let blend_buffer = self.blend_buffer.get_or_init(|| {
+            BlendBuffer::new(
+                descriptors,
+                self.size,
+                self.format,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                pool,
+            )
+        });
+        self.ensure_cleared(encoder);
+        let origin = wgpu::Origin3d {
+            x: region.x_min,
+            y: region.y_min,
+            z: 0,
+        };
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: self
+                    .resolve_buffer
+                    .as_ref()
+                    .map(|b| b.texture())
+                    .unwrap_or_else(|| self.frame_buffer.texture()),
+                mip_level: 0,
+                origin,
+                aspect: Default::default(),
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: blend_buffer.texture(),
+                mip_level: 0,
+                origin,
+                aspect: Default::default(),
+            },
+            wgpu::Extent3d {
+                width: region.width(),
+                height: region.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        blend_buffer
+    }
+
     pub fn color_view(&self) -> &wgpu::TextureView {
         self.resolve_buffer
             .as_ref()

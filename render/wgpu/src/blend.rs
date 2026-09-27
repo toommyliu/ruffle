@@ -3,7 +3,7 @@ use enum_map::Enum;
 use ruffle_render::{commands::RenderBlendMode, pixel_bender::PixelBenderShaderHandle};
 use swf::BlendMode;
 
-#[derive(Enum, Debug, Copy, Clone)]
+#[derive(Enum, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ComplexBlend {
     Multiply,   // Can't be trivial, 0 alpha is special case
     Lighten,    // Might be trivial but I can't reproduce the right colors
@@ -113,6 +113,9 @@ pub enum DirectBlend {
     Trivial(TrivialBlend),
     /// Needs `Features::DUAL_SOURCE_BLENDING`; see `shaders/multiply_direct.wgsl`.
     Multiply,
+    /// Reads what's below from a copy of the target, made right before the
+    /// draw; see `shaders/complex_direct.wgsl`.
+    Complex(ComplexBlend),
 }
 
 impl DirectBlend {
@@ -133,7 +136,40 @@ impl DirectBlend {
             RenderBlendMode::Builtin(BlendMode::Multiply) if dual_source_blending => {
                 Some(DirectBlend::Multiply)
             }
+            RenderBlendMode::Builtin(BlendMode::Multiply) => {
+                Some(DirectBlend::Complex(ComplexBlend::Multiply))
+            }
+            RenderBlendMode::Builtin(BlendMode::Lighten) => {
+                Some(DirectBlend::Complex(ComplexBlend::Lighten))
+            }
+            RenderBlendMode::Builtin(BlendMode::Darken) => {
+                Some(DirectBlend::Complex(ComplexBlend::Darken))
+            }
+            RenderBlendMode::Builtin(BlendMode::Difference) => {
+                Some(DirectBlend::Complex(ComplexBlend::Difference))
+            }
+            RenderBlendMode::Builtin(BlendMode::Overlay) => {
+                Some(DirectBlend::Complex(ComplexBlend::Overlay))
+            }
+            RenderBlendMode::Builtin(BlendMode::HardLight) => {
+                Some(DirectBlend::Complex(ComplexBlend::HardLight))
+            }
             _ => None,
+        }
+    }
+
+    /// The mode number `shaders/complex_direct.wgsl` uses for a complex blend.
+    pub fn complex_direct_mode(blend: ComplexBlend) -> u32 {
+        match blend {
+            ComplexBlend::Multiply => 0,
+            ComplexBlend::Lighten => 1,
+            ComplexBlend::Darken => 2,
+            ComplexBlend::Difference => 3,
+            ComplexBlend::Overlay => 4,
+            ComplexBlend::HardLight => 5,
+            ComplexBlend::Invert | ComplexBlend::Alpha | ComplexBlend::Erase => {
+                unreachable!("{blend:?} is never drawn directly")
+            }
         }
     }
 

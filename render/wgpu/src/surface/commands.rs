@@ -28,6 +28,7 @@ pub struct CommandRenderer<'encoder> {
     mask_state: MaskState,
     needs_stencil: bool,
     dynamic_vertex_buffer: &'encoder wgpu::Buffer,
+    parent_copy: Option<&'encoder wgpu::BindGroup>,
 }
 
 impl<'encoder> CommandRenderer<'encoder> {
@@ -39,6 +40,7 @@ impl<'encoder> CommandRenderer<'encoder> {
         num_masks: u32,
         mask_state: MaskState,
         needs_stencil: bool,
+        parent_copy: Option<&'encoder wgpu::BindGroup>,
     ) -> Self {
         Self {
             pipelines,
@@ -47,6 +49,20 @@ impl<'encoder> CommandRenderer<'encoder> {
             descriptors,
             needs_stencil,
             dynamic_vertex_buffer,
+            parent_copy,
+        }
+    }
+
+    fn bind_parent_copy(&self, render_pass: &mut wgpu::RenderPass<'encoder>, blend: DirectBlend) {
+        if let DirectBlend::Complex(mode) = blend {
+            let offset = DirectBlend::complex_direct_mode(mode)
+                * self.descriptors.complex_direct_mode_stride;
+            render_pass.set_bind_group(
+                3,
+                self.parent_copy
+                    .expect("A complex blend draw must follow a parent copy"),
+                &[offset],
+            );
         }
     }
 
@@ -127,6 +143,7 @@ impl<'encoder> CommandRenderer<'encoder> {
         } else {
             render_pass.set_pipeline(pipelines.stencilless_pipeline());
         }
+        self.bind_parent_copy(render_pass, blend);
     }
 
     pub fn prep_lines(&self, render_pass: &mut wgpu::RenderPass<'encoder>) {
@@ -151,6 +168,7 @@ impl<'encoder> CommandRenderer<'encoder> {
         }
 
         render_pass.set_bind_group(2, bind_group, &[]);
+        self.bind_parent_copy(render_pass, blend);
     }
 
     pub fn prep_bitmap(
@@ -177,6 +195,7 @@ impl<'encoder> CommandRenderer<'encoder> {
         }
 
         render_pass.set_bind_group(2, bind_group, &[]);
+        self.bind_parent_copy(render_pass, blend);
     }
 
     pub fn prep_alpha_mask(
@@ -424,6 +443,9 @@ pub enum Chunk {
         blend_mode: ChunkBlendMode,
         needs_stencil: bool,
     },
+    CopyParent {
+        region: PixelRegion,
+    },
 }
 
 #[derive(Debug)]
@@ -617,29 +639,26 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
     /// Every complex blend will be its own item, but every other draw will be chunked together
     fn chunk_blends(&mut self, commands: CommandList) -> Vec<Chunk> {
         commands.execute(self);
+        self.flush_current();
+        mem::take(&mut self.result)
+    }
 
-        let current = mem::take(&mut self.current);
-        let mut result = mem::take(&mut self.result);
-        let needs_stencil = mem::take(&mut self.needs_stencil);
-        let transforms = mem::replace(
-            &mut self.transforms,
-            Self::new_transforms(self.descriptors, self.dynamic_transforms),
-        );
-        let vertices = mem::replace(
-            &mut self.vertices,
-            Self::new_vertices(self.descriptors, self.dynamic_transforms),
-        );
-
-        if !current.is_empty() {
-            result.push(Chunk::Draw {
-                chunk: current,
-                needs_stencil,
-                transforms,
-                vertices,
-            });
+    fn flush_current(&mut self) {
+        if self.current.is_empty() {
+            return;
         }
-
-        result
+        self.result.push(Chunk::Draw {
+            chunk: mem::take(&mut self.current),
+            needs_stencil: self.needs_stencil,
+            transforms: mem::replace(
+                &mut self.transforms,
+                Self::new_transforms(self.descriptors, self.dynamic_transforms),
+            ),
+            vertices: mem::replace(
+                &mut self.vertices,
+                Self::new_vertices(self.descriptors, self.dynamic_transforms),
+            ),
+        });
     }
 
     fn add_to_current(
@@ -686,18 +705,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                 vertices_range.map(|v| v.start),
             ));
         } else {
-            self.result.push(Chunk::Draw {
-                chunk: mem::take(&mut self.current),
-                needs_stencil: self.needs_stencil,
-                transforms: mem::replace(
-                    &mut self.transforms,
-                    Self::new_transforms(self.descriptors, self.dynamic_transforms),
-                ),
-                vertices: mem::replace(
-                    &mut self.vertices,
-                    Self::new_vertices(self.descriptors, self.dynamic_transforms),
-                ),
-            });
+            self.flush_current();
             let transform_range = self
                 .transforms
                 .add(&[transform])
@@ -786,6 +794,17 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             [Command::RenderBitmap { .. }] => {}
             _ => return false,
         }
+        if let DirectBlend::Complex(_) = blend {
+            let Some(region) = self.parent_copy_region(&commands.commands[0]) else {
+                return false;
+            };
+            if region.is_empty() {
+                return true;
+            }
+            self.flush_current();
+            self.result.push(Chunk::CopyParent { region });
+            self.needs_stencil = self.num_masks > 0;
+        }
         match commands.commands.pop() {
             Some(Command::RenderShape { shape, transform }) => {
                 self.add_shape(shape, transform, blend);
@@ -802,6 +821,44 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             _ => unreachable!("matched above"),
         }
         true
+    }
+
+    fn parent_copy_region(&self, command: &Command) -> Option<PixelRegion> {
+        let bounds = match command {
+            Command::RenderShape { shape, transform } => {
+                if transform.perspective_projection.is_some() {
+                    return None;
+                }
+                transform.matrix * as_mesh(shape).bounds
+            }
+            Command::RenderBitmap {
+                transform,
+                pixel_snapping,
+                region,
+                ..
+            } => {
+                if transform.perspective_projection.is_some() {
+                    return None;
+                }
+                let mut matrix = transform.matrix;
+                pixel_snapping.apply(&mut matrix);
+                matrix
+                    * swf::Rectangle {
+                        x_min: Twips::ZERO,
+                        y_min: Twips::ZERO,
+                        x_max: Twips::from_pixels(region.width().into()),
+                        y_max: Twips::from_pixels(region.height().into()),
+                    }
+            }
+            _ => return None,
+        };
+        let mut region = PixelRegion::from(bounds);
+        region.x_min = region.x_min.saturating_sub(1);
+        region.y_min = region.y_min.saturating_sub(1);
+        region.x_max += 1;
+        region.y_max += 1;
+        region.clamp(self.width, self.height);
+        Some(region)
     }
 }
 
@@ -895,20 +952,7 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                 );
             }
             blend_type => {
-                if !self.current.is_empty() {
-                    self.result.push(Chunk::Draw {
-                        chunk: mem::take(&mut self.current),
-                        needs_stencil: self.needs_stencil,
-                        transforms: mem::replace(
-                            &mut self.transforms,
-                            Self::new_transforms(self.descriptors, self.dynamic_transforms),
-                        ),
-                        vertices: mem::replace(
-                            &mut self.vertices,
-                            Self::new_vertices(self.descriptors, self.dynamic_transforms),
-                        ),
-                    });
-                }
+                self.flush_current();
                 let chunk_blend_mode = match blend_type {
                     BlendType::Complex(complex) => ChunkBlendMode::Complex(complex),
                     BlendType::Shader(shader) => ChunkBlendMode::Shader(shader),

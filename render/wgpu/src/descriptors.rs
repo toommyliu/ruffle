@@ -9,6 +9,7 @@ use fnv::FnvHashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use wgpu::Backend;
+use wgpu::util::DeviceExt;
 
 pub struct Descriptors {
     pub wgpu_instance: wgpu::Instance,
@@ -24,6 +25,8 @@ pub struct Descriptors {
     pub shaders: Shaders,
     pipelines: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), Arc<Pipelines>>>,
     pub filters: Filters,
+    pub complex_direct_modes: wgpu::Buffer,
+    pub complex_direct_mode_stride: u32,
 }
 
 impl Debug for Descriptors {
@@ -46,6 +49,16 @@ impl Descriptors {
         let quad = Quad::new(&device);
         let filters = Filters::new(&device);
         let backend = adapter.get_info().backend;
+        let complex_direct_mode_stride = limits.min_uniform_buffer_offset_alignment.max(16);
+        let mut modes = vec![0u32; 6 * complex_direct_mode_stride as usize / 4];
+        for mode in 0..6 {
+            modes[mode * complex_direct_mode_stride as usize / 4] = mode as u32;
+        }
+        let complex_direct_modes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: create_debug_label!("Complex blend modes").as_deref(),
+            contents: bytemuck::cast_slice(&modes),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
 
         Self {
             wgpu_instance: instance,
@@ -61,6 +74,8 @@ impl Descriptors {
             shaders,
             pipelines: Default::default(),
             filters,
+            complex_direct_modes,
+            complex_direct_mode_stride,
         }
     }
 
