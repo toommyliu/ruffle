@@ -4,6 +4,7 @@ use crate::context3d::WgpuContext3D;
 use crate::dynamic_transforms::DynamicTransforms;
 use crate::filters::FilterSource;
 use crate::mesh::{CommonGradient, Mesh, PendingDraw};
+use crate::mesh_arena::BufferArena;
 use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
 use crate::surface::{LayerRef, Surface};
 use crate::target::{MaybeOwnedBuffer, TextureTarget};
@@ -84,6 +85,45 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     dynamic_transforms: DynamicTransforms,
     active_frame: ActiveFrame,
     profiler: GpuProfiler,
+    mesh_buffers: MeshBuffers,
+}
+
+#[derive(Debug)]
+struct MeshBuffers {
+    vertices: BufferArena,
+    indices: BufferArena,
+    uniforms: BufferArena,
+}
+
+impl MeshBuffers {
+    fn new(limits: &wgpu::Limits) -> Self {
+        Self {
+            vertices: BufferArena::new(
+                "Mesh vertices",
+                wgpu::BufferUsages::VERTEX,
+                wgpu::COPY_BUFFER_ALIGNMENT,
+                4 << 20,
+            ),
+            indices: BufferArena::new(
+                "Mesh indices",
+                wgpu::BufferUsages::INDEX,
+                wgpu::COPY_BUFFER_ALIGNMENT,
+                2 << 20,
+            ),
+            uniforms: BufferArena::new(
+                "Mesh uniforms",
+                wgpu::BufferUsages::UNIFORM,
+                limits.min_uniform_buffer_offset_alignment.into(),
+                256 << 10,
+            ),
+        }
+    }
+
+    fn end_frame(&self) {
+        self.vertices.end_frame();
+        self.indices.end_frame();
+        self.uniforms.end_frame();
+    }
 }
 
 impl WgpuRenderBackend<SwapChainTarget> {
@@ -267,6 +307,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         )?;
         #[cfg(not(feature = "profile-with-tracy"))]
         let profiler = GpuProfiler::new(&descriptors.device, profiler_settings)?;
+        let mesh_buffers = MeshBuffers::new(&descriptors.limits);
 
         Ok(Self {
             descriptors,
@@ -281,6 +322,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             dynamic_transforms: transforms,
             active_frame,
             profiler,
+            mesh_buffers,
         })
     }
 
@@ -329,31 +371,40 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             }
         }
 
-        let uniform_buffer = uniform_buffer.finish(
-            &self.descriptors.device,
-            create_debug_label!("Shape {} uniforms", shape_id),
-            wgpu::BufferUsages::UNIFORM,
-        );
-        let vertex_buffer = vertex_buffer.finish(
-            &self.descriptors.device,
-            create_debug_label!("Shape {} vertices", shape_id),
-            wgpu::BufferUsages::VERTEX,
-        );
-        let index_buffer = index_buffer.finish(
-            &self.descriptors.device,
-            create_debug_label!("Shape {} indices", shape_id),
-            wgpu::BufferUsages::INDEX,
-        );
+        let device = &self.descriptors.device;
+        let queue = &self.descriptors.queue;
+        let uniforms = (!uniform_buffer.bytes().is_empty()).then(|| {
+            self.mesh_buffers
+                .uniforms
+                .allocate(device, queue, uniform_buffer.bytes())
+        });
+        let vertices = self
+            .mesh_buffers
+            .vertices
+            .allocate(device, queue, vertex_buffer.bytes());
+        let indices = self
+            .mesh_buffers
+            .indices
+            .allocate(device, queue, index_buffer.bytes());
 
         let draws = draws
             .into_iter()
-            .map(|d| d.finish(&self.descriptors, &uniform_buffer, &gradients))
+            .map(|d| {
+                d.finish(
+                    &self.descriptors,
+                    vertices.offset(),
+                    indices.offset(),
+                    uniforms.as_ref(),
+                    &gradients,
+                )
+            })
             .collect();
 
         Mesh {
             draws,
-            vertex_buffer,
-            index_buffer,
+            vertex_buffer: vertices.buffer().clone(),
+            index_buffer: indices.buffer().clone(),
+            _allocations: [Some(vertices), Some(indices), uniforms],
             flat,
             bounds,
         }
@@ -676,6 +727,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         self.offscreen_texture_pool
             .end_frame(OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES);
         self.texture_pool.end_frame(TEXTURE_MAX_IDLE_FRAMES);
+        self.mesh_buffers.end_frame();
         self.profiler
             .end_frame()
             .expect("Frame should end successfully");

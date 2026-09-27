@@ -1,7 +1,6 @@
 use bytemuck::{AnyBitPattern, NoUninit};
 use std::ops::Range;
 use wgpu::BufferAddress;
-use wgpu::util::DeviceExt;
 
 pub struct BufferBuilder {
     inner: Vec<u8>,
@@ -59,17 +58,8 @@ impl BufferBuilder {
         Ok((start_pos as wgpu::BufferAddress)..(self.inner.len() as wgpu::BufferAddress))
     }
 
-    pub fn finish(
-        self,
-        device: &wgpu::Device,
-        label: Option<String>,
-        usage: wgpu::BufferUsages,
-    ) -> wgpu::Buffer {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: label.as_deref(),
-            contents: &self.inner,
-            usage,
-        })
+    pub fn bytes(&self) -> &[u8] {
+        &self.inner
     }
 
     pub fn copy_to(

@@ -6,6 +6,7 @@ use std::ops::Range;
 use wgpu::util::DeviceExt;
 
 use crate::buffer_builder::BufferBuilder;
+use crate::mesh_arena::ArenaAllocation;
 use ruffle_render::backend::{ShapeHandle, ShapeHandleImpl};
 use ruffle_render::bitmap::BitmapSource;
 use ruffle_render::tessellator::{Bitmap, Draw as LyonDraw, DrawType as TessDrawType, Gradient};
@@ -19,6 +20,7 @@ pub struct Mesh {
     pub draws: Vec<Draw>,
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
+    pub _allocations: [Option<ArenaAllocation>; 3],
     pub flat: bool,
     pub bounds: swf::Rectangle<swf::Twips>,
 }
@@ -42,15 +44,15 @@ impl PendingDraw {
     pub fn finish(
         self,
         descriptors: &Descriptors,
-        uniform_buffer: &wgpu::Buffer,
+        vertex_offset: wgpu::BufferAddress,
+        index_offset: wgpu::BufferAddress,
+        uniforms: Option<&ArenaAllocation>,
         gradients: &[CommonGradient],
     ) -> Draw {
         Draw {
-            draw_type: self
-                .draw_type
-                .finish(descriptors, uniform_buffer, gradients),
-            vertices: self.vertices,
-            indices: self.indices,
+            draw_type: self.draw_type.finish(descriptors, uniforms, gradients),
+            vertices: self.vertices.start + vertex_offset..self.vertices.end + vertex_offset,
+            indices: self.indices.start + index_offset..self.indices.end + index_offset,
             num_indices: self.num_indices,
             num_mask_indices: self.num_mask_indices,
         }
@@ -195,7 +197,7 @@ impl PendingDrawType {
     pub fn finish(
         self,
         descriptors: &Descriptors,
-        uniform_buffer: &wgpu::Buffer,
+        uniforms: Option<&ArenaAllocation>,
         gradients: &[CommonGradient],
     ) -> DrawType {
         match self {
@@ -205,6 +207,7 @@ impl PendingDrawType {
                 bind_group_label,
             } => {
                 let common = &gradients[gradient_index];
+                let uniforms = uniforms.expect("A mesh with gradients has uniforms");
                 let bind_group = descriptors
                     .device
                     .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -213,8 +216,8 @@ impl PendingDrawType {
                             wgpu::BindGroupEntry {
                                 binding: 0,
                                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: uniform_buffer,
-                                    offset: common.buffer_offset,
+                                    buffer: uniforms.buffer(),
+                                    offset: uniforms.offset() + common.buffer_offset,
                                     size: wgpu::BufferSize::new(
                                         std::mem::size_of::<GradientUniforms>() as u64,
                                     ),

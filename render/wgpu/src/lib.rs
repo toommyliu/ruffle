@@ -47,6 +47,7 @@ mod dynamic_transforms;
 mod filters;
 mod layouts;
 mod mesh;
+mod mesh_arena;
 mod shaders;
 mod surface;
 
