@@ -733,6 +733,11 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
             self.texture_pool,
         );
         target.ensure_cleared(self.draw_encoder);
+        crate::backend::submit_if_too_many_passes(
+            self.descriptors,
+            self.staging_belt,
+            self.draw_encoder.recorder,
+        );
 
         // We currently do not support shader blends in masks. In order not to
         // break other parts of the scene, we just fall back to a normal blend.

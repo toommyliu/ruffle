@@ -34,6 +34,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use swf::Color;
 use tracing::instrument;
 use wgpu::SubmissionIndex;
@@ -1278,6 +1279,47 @@ pub struct ActiveFrame {
     draws_since_flush: u32,
 }
 
+static PASSES_SINCE_SUBMIT: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn count_render_pass() {
+    PASSES_SINCE_SUBMIT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn note_submit() {
+    PASSES_SINCE_SUBMIT.store(0, Ordering::Relaxed);
+}
+
+fn passes_since_submit() -> u64 {
+    PASSES_SINCE_SUBMIT.load(Ordering::Relaxed)
+}
+
+/// Every render pass keeps two command buffers alive until its encoder is
+/// submitted, and Metal refuses to hand out more than 4096 at once (wgpu then
+/// reports the device as lost). A crowded scene can record thousands of
+/// passes in one frame (each blend layer and filter costs several), so
+/// submit what has been recorded once it holds this many passes.
+const MAX_PASSES_PER_SUBMIT: u64 = 512;
+
+pub(crate) fn submit_if_too_many_passes(
+    descriptors: &Descriptors,
+    staging_belt: &mut wgpu::util::StagingBelt,
+    encoder: &mut wgpu::CommandEncoder,
+) {
+    if passes_since_submit() <= MAX_PASSES_PER_SUBMIT {
+        return;
+    }
+    staging_belt.finish();
+    let recorded = std::mem::replace(
+        encoder,
+        descriptors
+            .device
+            .create_command_encoder(&Default::default()),
+    );
+    descriptors.queue.submit(Some(recorded.finish()));
+    note_submit();
+    staging_belt.recall();
+}
+
 impl ActiveFrame {
     const MAX_DRAWS_PER_FLUSH: u32 = 100;
 
@@ -1297,6 +1339,7 @@ impl ActiveFrame {
         target: &T,
         frame: T::Frame,
     ) -> SubmissionIndex {
+        note_submit();
         self.draws_since_flush = 0;
         self.staging_belt.finish();
         let draw_encoder = std::mem::replace(
@@ -1316,6 +1359,7 @@ impl ActiveFrame {
     }
 
     pub fn submit_direct(&mut self, descriptors: &Descriptors) -> SubmissionIndex {
+        note_submit();
         self.draws_since_flush = 0;
         self.staging_belt.finish();
         let draw_encoder = std::mem::replace(
@@ -1336,7 +1380,9 @@ impl ActiveFrame {
         // Hard to track that though... so let's just flush it out if we do more than X draws per frame
         self.draws_since_flush += 1;
 
-        if self.draws_since_flush > Self::MAX_DRAWS_PER_FLUSH {
+        if self.draws_since_flush > Self::MAX_DRAWS_PER_FLUSH
+            || passes_since_submit() > MAX_PASSES_PER_SUBMIT
+        {
             self.submit_direct(descriptors);
         }
     }

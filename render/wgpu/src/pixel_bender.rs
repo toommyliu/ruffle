@@ -645,6 +645,7 @@ pub(super) fn run_pixelbender_shader_impl(
 
     let pipeline = compiled_shader.get_pipeline(descriptors, sample_count, target.format());
 
+    crate::backend::count_render_pass();
     let mut render_pass = render_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("PixelBender render pass"),
         color_attachments: &[color_attachment],

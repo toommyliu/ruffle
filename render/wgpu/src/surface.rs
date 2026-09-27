@@ -157,6 +157,7 @@ impl Surface {
                         draw_encoder,
                         &dynamic_transforms.vertex_buffer,
                     );
+                    crate::backend::count_render_pass();
                     let mut render_pass = draw_encoder.scoped_render_pass(
                         format!(
                             "Chunked draw calls {}",
@@ -289,6 +290,7 @@ impl Surface {
                                 ],
                             });
 
+                    crate::backend::count_render_pass();
                     let mut render_pass =
                         draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: create_debug_label!(
@@ -344,6 +346,11 @@ impl Surface {
                     render_pass.draw_indexed(0..6, 0, 0..1);
                 }
             }
+            crate::backend::submit_if_too_many_passes(
+                descriptors,
+                staging_belt,
+                draw_encoder.recorder,
+            );
         }
 
         // If nothing happened, ensure it's cleared so we don't operate on garbage data

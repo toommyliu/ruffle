@@ -230,6 +230,7 @@ pub fn run_copy_pipeline(
     // so this doesn't matter.
     let load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
 
+    crate::backend::count_render_pass();
     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: create_debug_label!("Copy back to render target").as_deref(),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

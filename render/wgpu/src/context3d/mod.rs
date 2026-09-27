@@ -242,6 +242,7 @@ impl WgpuContext3D {
             None
         };
 
+        crate::backend::count_render_pass();
         let mut pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Context3D render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
