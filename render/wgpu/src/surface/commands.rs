@@ -460,10 +460,19 @@ pub enum Chunk {
         texture: PoolOrArcTexture,
         blend_mode: ChunkBlendMode,
         needs_stencil: bool,
+        region: Option<LayerRect>,
     },
     CopyParent {
         regions: Vec<PixelRegion>,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LayerRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug)]
@@ -572,6 +581,55 @@ struct PendingDraw {
     transform: Transforms,
     vertices: Option<[PosUvVertex; 4]>,
     command: DrawCommand,
+}
+
+const LAYER_SIZE_STEP: u32 = 64;
+
+fn reads_other_layers(commands: &CommandList) -> bool {
+    commands.commands.iter().any(|command| match command {
+        Command::Blend(inner, mode) => {
+            matches!(
+                mode,
+                RenderBlendMode::Builtin(BlendMode::Alpha | BlendMode::Erase)
+            ) || reads_other_layers(inner)
+        }
+        Command::RenderAlphaMask {
+            maskee_commands,
+            mask_commands,
+        } => reads_other_layers(maskee_commands) || reads_other_layers(mask_commands),
+        _ => false,
+    })
+}
+
+fn translate_commands(commands: &mut CommandList, dx: Twips, dy: Twips) {
+    for command in &mut commands.commands {
+        match command {
+            Command::RenderBitmap { transform, .. }
+            | Command::RenderShape { transform, .. }
+            | Command::RenderStage3D { transform, .. } => {
+                transform.matrix.tx += dx;
+                transform.matrix.ty += dy;
+            }
+            Command::DrawRect { matrix, .. }
+            | Command::DrawLine { matrix, .. }
+            | Command::DrawLineRect { matrix, .. } => {
+                matrix.tx += dx;
+                matrix.ty += dy;
+            }
+            Command::Blend(inner, _) => translate_commands(inner, dx, dy),
+            Command::RenderAlphaMask {
+                maskee_commands,
+                mask_commands,
+            } => {
+                translate_commands(maskee_commands, dx, dy);
+                translate_commands(mask_commands, dx, dy);
+            }
+            Command::PushMask
+            | Command::ActivateMask
+            | Command::DeactivateMask
+            | Command::PopMask => {}
+        }
+    }
 }
 
 const BATCH_TILE_SIZE: u32 = 16;
@@ -948,6 +1006,36 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
         union.unwrap_or(PixelRegion::for_whole_size(0, 0))
     }
 
+    fn layer_rect(
+        &self,
+        blend_mode: &RenderBlendMode,
+        commands: &CommandList,
+        footprint: PixelRegion,
+    ) -> Option<LayerRect> {
+        if footprint.is_empty()
+            || matches!(
+                blend_mode,
+                RenderBlendMode::Shader(_)
+                    | RenderBlendMode::Builtin(BlendMode::Alpha | BlendMode::Erase)
+            )
+            || reads_other_layers(commands)
+        {
+            return None;
+        }
+        let round = |n: u32| n.div_ceil(LAYER_SIZE_STEP) * LAYER_SIZE_STEP;
+        let (width, height) = (round(footprint.width()), round(footprint.height()));
+        if u64::from(width) * u64::from(height) * 2 > u64::from(self.width) * u64::from(self.height)
+        {
+            return None;
+        }
+        Some(LayerRect {
+            x: footprint.x_min,
+            y: footprint.y_min,
+            width,
+            height,
+        })
+    }
+
     fn quad_footprint(&self, matrix: &Matrix) -> Footprint {
         Footprint {
             region: self.footprint(
@@ -1236,11 +1324,21 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
             return;
         }
         let footprint = self.commands_footprint(&commands);
+        let layer_rect = self.layer_rect(&blend_mode, &commands, footprint);
+        if let Some(rect) = layer_rect {
+            translate_commands(
+                &mut commands,
+                -Twips::from_pixels_i32(rect.x as i32),
+                -Twips::from_pixels_i32(rect.y as i32),
+            );
+        }
+        let (surface_width, surface_height) =
+            layer_rect.map_or((self.width, self.height), |rect| (rect.width, rect.height));
         let surface = Surface::new(
             self.descriptors,
             self.quality,
-            self.width,
-            self.height,
+            surface_width,
+            surface_height,
             wgpu::TextureFormat::Rgba8Unorm,
         );
         let target_layer = if let RenderBlendMode::Builtin(BlendMode::Layer) = &blend_mode {
@@ -1282,8 +1380,14 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
 
         match blend_type {
             BlendType::Trivial(blend_mode) => {
+                let origin = layer_rect.map_or(Matrix::IDENTITY, |rect| {
+                    Matrix::translate(
+                        Twips::from_pixels_i32(rect.x as i32),
+                        Twips::from_pixels_i32(rect.y as i32),
+                    )
+                });
                 let transform = Transform {
-                    matrix: Matrix::scale(target.width() as f32, target.height() as f32),
+                    matrix: origin * Matrix::scale(target.width() as f32, target.height() as f32),
                     tz: 0.0,
                     color_transform: Default::default(),
                     perspective_projection: None,
@@ -1342,6 +1446,7 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                     texture: target.take_color_texture(),
                     blend_mode: chunk_blend_mode,
                     needs_stencil: self.num_masks > 0,
+                    region: layer_rect,
                 };
                 if let Some(block) = &mut self.masked {
                     block.regions.push(

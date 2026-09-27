@@ -12,12 +12,14 @@ use crate::surface::commands::{Chunk, CommandRenderer, chunk_blends};
 use crate::utils::run_copy_pipeline;
 use crate::utils::supported_sample_count;
 use crate::{Descriptors, MaskState, Pipelines};
+use ruffle_render::bitmap::PixelRegion;
 use ruffle_render::commands::CommandList;
 use ruffle_render::pixel_bender_support::{ImageInputTexture, PixelBenderShaderArgument};
 use ruffle_render::quality::StageQuality;
 use std::sync::Arc;
 use target::CommandTarget;
 use tracing::instrument;
+use wgpu::util::DeviceExt;
 use wgpu_profiler::Scope;
 
 pub use crate::surface::commands::LayerRef;
@@ -241,6 +243,7 @@ impl Surface {
                     texture,
                     blend_mode: ChunkBlendMode::Shader(shader),
                     needs_stencil,
+                    region: _,
                 } => {
                     assert!(!needs_stencil, "Shader blend mode not implemented in masks");
                     let parent_blend_buffer =
@@ -277,6 +280,7 @@ impl Surface {
                     texture,
                     blend_mode: ChunkBlendMode::Complex(blend_mode),
                     needs_stencil,
+                    region,
                 } => {
                     let parent = match blend_mode {
                         ComplexBlend::Alpha | ComplexBlend::Erase => {
@@ -292,8 +296,40 @@ impl Surface {
                         _ => &target,
                     };
 
-                    let parent_blend_buffer =
-                        parent.update_blend_buffer(descriptors, texture_pool, draw_encoder);
+                    let parent_blend_buffer = match region {
+                        Some(rect) => {
+                            let mut copy =
+                                PixelRegion::for_region(rect.x, rect.y, rect.width, rect.height);
+                            copy.clamp(parent.width(), parent.height());
+                            if copy.is_empty() {
+                                continue;
+                            }
+                            parent.update_blend_buffer_region(
+                                descriptors,
+                                texture_pool,
+                                draw_encoder,
+                                copy,
+                            )
+                        }
+                        None => parent.update_blend_buffer(descriptors, texture_pool, draw_encoder),
+                    };
+                    let (width, height) = (target.width() as f32, target.height() as f32);
+                    let rect = region.map_or([0.0, 0.0, 1.0, 1.0], |rect| {
+                        [
+                            rect.x as f32 / width,
+                            rect.y as f32 / height,
+                            rect.width as f32 / width,
+                            rect.height as f32 / height,
+                        ]
+                    });
+                    let region_buffer =
+                        descriptors
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: create_debug_label!("Blend layer region").as_deref(),
+                                contents: bytemuck::cast_slice(&rect),
+                                usage: wgpu::BufferUsages::UNIFORM,
+                            });
 
                     let blend_bind_group =
                         descriptors
@@ -328,6 +364,10 @@ impl Surface {
                                         resource: wgpu::BindingResource::Sampler(
                                             descriptors.bitmap_samplers.get_sampler(false, false),
                                         ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 3,
+                                        resource: region_buffer.as_entire_binding(),
                                     },
                                 ],
                             });
