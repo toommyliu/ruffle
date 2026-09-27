@@ -4,11 +4,11 @@ use crate::avm2::Avm2;
 use crate::avm2::activation::Activation;
 use crate::avm2::function::FunctionArgs;
 use crate::avm2::globals::slots::flash_events_event_dispatcher as slots;
-use crate::avm2::object::{EventObject, FunctionObject, Object, TObject as _};
+use crate::avm2::object::{EventObject, FunctionObject, FunctionObjectWeak, Object, TObject as _};
 use crate::display_object::TDisplayObject;
 use crate::string::AvmString;
 use fnv::FnvHashMap;
-use gc_arena::Collect;
+use gc_arena::{Collect, Gc, GcWeak, Mutation};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
@@ -220,10 +220,14 @@ impl<'gc> DispatchList<'gc> {
         priority: i32,
         handler: FunctionObject<'gc>,
         use_capture: bool,
+        use_weak_reference: bool,
     ) {
-        let new_handler = EventHandler::new(handler, use_capture);
+        let new_handler = EventHandler::new(handler, use_capture, use_weak_reference);
 
-        if let Some(event_sheaf) = self.get_event(event) {
+        if let Some(event_sheaf) = self.0.get_mut(&event) {
+            for set in event_sheaf.values_mut() {
+                set.retain(|h| !h.is_dropped());
+            }
             for other_set in event_sheaf.values() {
                 if other_set.contains(&new_handler) {
                     return;
@@ -245,7 +249,8 @@ impl<'gc> DispatchList<'gc> {
         handler: FunctionObject<'gc>,
         use_capture: bool,
     ) {
-        let old_handler = EventHandler::new(handler, use_capture);
+        // Equality ignores strength, so this also removes weak listeners.
+        let old_handler = EventHandler::new(handler, use_capture, false);
 
         for set in self.get_event_mut(event).values_mut() {
             if let Some(pos) = set.iter().position(|h| *h == old_handler) {
@@ -258,7 +263,7 @@ impl<'gc> DispatchList<'gc> {
     pub fn has_event_listener(&self, event: AvmString<'gc>) -> bool {
         if let Some(event_sheaf) = self.get_event(event) {
             for set in event_sheaf.values() {
-                if !set.is_empty() {
+                if set.iter().any(|h| !h.is_dropped()) {
                     return true;
                 }
             }
@@ -279,13 +284,14 @@ impl<'gc> DispatchList<'gc> {
         &'a mut self,
         event: AvmString<'gc>,
         use_capture: bool,
+        mc: &'a Mutation<'gc>,
     ) -> impl 'a + Iterator<Item = FunctionObject<'gc>> {
         self.get_event_mut(event)
             .iter()
             .rev()
             .flat_map(|(_p, v)| v.iter())
             .filter(move |eh| eh.use_capture == use_capture)
-            .map(|eh| eh.handler)
+            .filter_map(move |eh| eh.handler.upgrade(mc))
     }
 }
 
@@ -300,7 +306,7 @@ impl Default for DispatchList<'_> {
 #[collect(no_drop)]
 struct EventHandler<'gc> {
     /// The event handler to call.
-    handler: FunctionObject<'gc>,
+    handler: Listener<'gc>,
 
     /// Indicates if this handler should only be called for capturing events
     /// (when `true`), or if it should only be called for bubbling and
@@ -308,17 +314,51 @@ struct EventHandler<'gc> {
     use_capture: bool,
 }
 
+#[derive(Clone, Copy, Collect)]
+#[collect(no_drop)]
+enum Listener<'gc> {
+    Strong(FunctionObject<'gc>),
+    Weak(FunctionObjectWeak<'gc>),
+}
+
+impl<'gc> Listener<'gc> {
+    fn upgrade(self, mc: &Mutation<'gc>) -> Option<FunctionObject<'gc>> {
+        match self {
+            Listener::Strong(function) => Some(function),
+            Listener::Weak(function) => function.0.upgrade(mc).map(FunctionObject),
+        }
+    }
+
+    fn as_ptr(self) -> *const () {
+        match self {
+            Listener::Strong(function) => Gc::as_ptr(function.0).cast(),
+            Listener::Weak(function) => GcWeak::as_ptr(function.0).cast(),
+        }
+    }
+}
+
 impl<'gc> EventHandler<'gc> {
-    fn new(handler: FunctionObject<'gc>, use_capture: bool) -> Self {
+    fn new(handler: FunctionObject<'gc>, use_capture: bool, use_weak_reference: bool) -> Self {
+        let handler = if use_weak_reference {
+            Listener::Weak(FunctionObjectWeak(Gc::downgrade(handler.0)))
+        } else {
+            Listener::Strong(handler)
+        };
         Self {
             handler,
             use_capture,
         }
     }
+
+    fn is_dropped(&self) -> bool {
+        matches!(self.handler, Listener::Weak(function) if function.0.is_dropped())
+    }
 }
 
 impl PartialEq for EventHandler<'_> {
     fn eq(&self, rhs: &Self) -> bool {
+        // Comparing addresses is safe for weak listeners too: a GcWeak keeps
+        // its allocation alive, so a dead function's address isn't reused.
         self.use_capture == rhs.use_capture
             && std::ptr::eq(self.handler.as_ptr(), rhs.handler.as_ptr())
     }
@@ -386,7 +426,7 @@ fn dispatch_event_to_target<'gc>(
     let handlers: Vec<FunctionObject<'gc>> = dispatch_list
         .as_dispatch_mut(activation.gc())
         .expect("Internal dispatch list is missing during dispatch!")
-        .iter_event_handlers(name, use_capture)
+        .iter_event_handlers(name, use_capture, activation.gc())
         .collect();
 
     if !handlers.is_empty() {
