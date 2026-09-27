@@ -407,7 +407,7 @@ impl Default for DisplayObjectBase<'_> {
             sound_transform: Default::default(),
             blend_mode: Default::default(),
             opaque_background: Default::default(),
-            flags: Cell::new(DisplayObjectFlags::VISIBLE),
+            flags: Cell::new(DisplayObjectFlags::VISIBLE.union(DisplayObjectFlags::FRAME_WORK)),
             scroll_rect: Cell::new(None),
             next_scroll_rect: Default::default(),
             scaling_grid: Default::default(),
@@ -2048,6 +2048,10 @@ pub trait TDisplayObject<'gc>:
         let had_parent = self.parent().is_some();
         let write = Gc::write(context.gc(), self.base());
         DisplayObjectBase::set_parent_ignoring_orphan_list(write, parent);
+        if parent.is_some() {
+            self.base().set_flag(DisplayObjectFlags::FRAME_WORK, false);
+            self.mark_frame_work();
+        }
         let parent_removed = had_parent && parent.is_none();
 
         if parent_removed {
@@ -2571,8 +2575,48 @@ pub trait TDisplayObject<'gc>:
     fn run_frame_scripts(self, context: &mut UpdateContext<'gc>) {
         if let Some(container) = self.as_container() {
             for child in container.iter_render_list() {
-                child.run_frame_scripts(context);
+                if child.has_frame_work() {
+                    child.run_frame_scripts(context);
+                    child.settle_frame_work();
+                }
             }
+        }
+    }
+
+    #[no_dynamic]
+    fn has_frame_work(self) -> bool {
+        self.base().contains_flag(DisplayObjectFlags::FRAME_WORK)
+    }
+
+    #[no_dynamic]
+    fn mark_frame_work(self) {
+        let mut node = Some(self);
+        while let Some(object) = node {
+            // An object with the flag has it on all of its ancestors too.
+            if object.has_frame_work() {
+                break;
+            }
+            object.base().set_flag(DisplayObjectFlags::FRAME_WORK, true);
+            node = object.parent();
+        }
+    }
+
+    #[no_dynamic]
+    fn settle_frame_work(self) {
+        let idle = match self {
+            DisplayObject::MovieClip(clip) => clip.frame_work_done(),
+            DisplayObject::Graphic(graphic) => {
+                graphic.object2().is_some() || !graphic.movie().is_action_script_3()
+            }
+            DisplayObject::MorphShape(_)
+            | DisplayObject::Text(_)
+            | DisplayObject::EditText(_)
+            | DisplayObject::Bitmap(_)
+            | DisplayObject::Video(_) => true,
+            _ => false,
+        };
+        if idle {
+            self.base().set_flag(DisplayObjectFlags::FRAME_WORK, false);
         }
     }
 
@@ -3171,6 +3215,10 @@ bitflags! {
         /// (they need to be instantiated "manually" by
         /// `Sprite.constructChildren`).
         const MANUAL_FRAME_CONSTRUCT  = 1 << 16;
+
+        /// Something at or below this object may have frames to construct or
+        /// scripts to run.
+        const FRAME_WORK              = 1 << 17;
     }
 }
 

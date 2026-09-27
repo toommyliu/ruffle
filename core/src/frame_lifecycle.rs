@@ -85,14 +85,19 @@ pub fn run_all_phases_avm2(context: &mut UpdateContext<'_>) {
 
     *context.frame_phase = FramePhase::Construct;
     OrphanManager::each_orphan_obj(context, |orphan, context| {
-        orphan.construct_frame(context);
+        if orphan.has_frame_work() {
+            orphan.construct_frame(context);
+        }
     });
     stage.construct_frame(context);
     broadcast_frame_constructed(context);
 
     *context.frame_phase = FramePhase::FrameScripts;
     OrphanManager::each_orphan_obj(context, |orphan, context| {
-        orphan.run_frame_scripts(context);
+        if orphan.has_frame_work() {
+            orphan.run_frame_scripts(context);
+            orphan.settle_frame_work();
+        }
     });
     stage.run_frame_scripts(context);
     run_frame_script_cleanup(context);
@@ -145,7 +150,9 @@ pub fn run_inner_goto_frame<'gc>(
 
     *context.frame_phase = FramePhase::Construct;
     OrphanManager::each_orphan_obj(context, |orphan, context| {
-        orphan.construct_frame(context);
+        if orphan.has_frame_work() {
+            orphan.construct_frame(context);
+        }
     });
     stage.construct_frame(context);
     broadcast_frame_constructed(context);
@@ -153,7 +160,10 @@ pub fn run_inner_goto_frame<'gc>(
     *context.frame_phase = FramePhase::FrameScripts;
     stage.run_frame_scripts(context);
     OrphanManager::each_orphan_obj(context, |orphan, context| {
-        orphan.run_frame_scripts(context);
+        if orphan.has_frame_work() {
+            orphan.run_frame_scripts(context);
+            orphan.settle_frame_work();
+        }
     });
 
     for child in removed_frame_scripts {

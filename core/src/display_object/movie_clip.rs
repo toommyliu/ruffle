@@ -919,6 +919,7 @@ impl<'gc> MovieClip<'gc> {
                 // the current frame, the goto is properly queued.
 
                 self.0.queued_goto.set(Some(goto_info));
+                self.mark_frame_work();
 
                 // If we have a frame script on that frame, add ourselves to the
                 // frame script cleanup queue so that that frame script is
@@ -1154,6 +1155,7 @@ impl<'gc> MovieClip<'gc> {
     /// This sets the current frame of this MovieClip to a given number.
     pub fn set_current_frame(self, current_frame: FrameNumber) {
         self.0.current_frame.set(current_frame);
+        self.mark_frame_work();
     }
 
     /// The amount of frames loaded in this movieclip.
@@ -1382,6 +1384,7 @@ impl<'gc> MovieClip<'gc> {
         run_sounds: bool,
         is_action_script_3: bool,
     ) {
+        self.mark_frame_work();
         let shared = Gc::as_ref(self.0.shared.get());
 
         let next_frame = self.determine_next_frame();
@@ -1648,6 +1651,7 @@ impl<'gc> MovieClip<'gc> {
     }
 
     fn run_goto(mut self, context: &mut UpdateContext<'gc>, frame: FrameNumber, is_implicit: bool) {
+        self.mark_frame_work();
         if cfg!(feature = "timeline_debug") {
             tracing::debug!(
                 "[{}]: {} from frame {} to frame {}",
@@ -2152,6 +2156,7 @@ impl<'gc> MovieClip<'gc> {
         context: &mut UpdateContext<'gc>,
     ) {
         let current_frame = self.current_frame();
+        self.mark_frame_work();
 
         let write = unlock!(Gc::write(context.gc(), self.0), MovieClipData, cell);
         let mut frame_scripts = RefMut::map(write.borrow_mut(), |r| &mut r.frame_scripts);
@@ -2524,6 +2529,18 @@ impl<'gc> MovieClip<'gc> {
         let has_pending_script = self.has_frame_script(self.0.current_frame.get());
         self.set_has_pending_script(has_pending_script);
     }
+
+    pub fn frame_work_done(self) -> bool {
+        if self.movie().is_action_script_3() && self.0.object2.get().is_none() {
+            return false;
+        }
+        let script_frame = self.0.queued_script_frame.get();
+        self.0.queued_goto.get().is_none()
+            && !self.0.loop_queued()
+            && (self.last_queued_script_frame() == Some(script_frame)
+                || self.frame_script(script_frame).is_none())
+            && self.iter_render_list().all(|child| !child.has_frame_work())
+    }
 }
 
 impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
@@ -2623,6 +2640,10 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
                     .0
                     .contains_flag(MovieClipFlags::RUNNING_CONSTRUCT_FRAME);
                 for child in self.iter_render_list() {
+                    if !child.has_frame_work() {
+                        continue;
+                    }
+
                     // Under some conditions, we won't run `construct_frame` on
                     // a not-yet-constructed child
                     if child.object2().is_none() {
@@ -2660,7 +2681,10 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         self.run_local_frame_scripts(context);
 
         for child in self.iter_render_list() {
-            child.run_frame_scripts(context);
+            if child.has_frame_work() {
+                child.run_frame_scripts(context);
+                child.settle_frame_work();
+            }
         }
     }
 
