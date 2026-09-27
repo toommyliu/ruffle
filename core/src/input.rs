@@ -304,6 +304,27 @@ impl InputManager {
         self.keys_down.contains(&key)
     }
 
+    pub fn stale_modifiers(&self, shift: bool, control: bool, alt: bool) -> Vec<KeyDescriptor> {
+        self.keys_down_phys_loc
+            .iter()
+            .filter_map(|&(physical_key, key_location)| {
+                let named = match physical_key {
+                    PhysicalKey::ShiftLeft | PhysicalKey::ShiftRight if !shift => NamedKey::Shift,
+                    PhysicalKey::ControlLeft | PhysicalKey::ControlRight if !control => {
+                        NamedKey::Control
+                    }
+                    PhysicalKey::AltLeft | PhysicalKey::AltRight if !alt => NamedKey::Alt,
+                    _ => return None,
+                };
+                Some(KeyDescriptor {
+                    physical_key,
+                    logical_key: LogicalKey::Named(named),
+                    key_location,
+                })
+            })
+            .collect()
+    }
+
     pub fn is_key_toggled(&self, key: KeyCode) -> bool {
         self.keys_toggled.contains(&key)
     }
@@ -637,5 +658,34 @@ mod tests {
                 })
                 .is_none()
         );
+    }
+
+    #[test]
+    fn stale_modifiers_released() {
+        let mut input = InputManager::new(HashMap::new());
+        let modifier = |named, physical_key| KeyDescriptor {
+            logical_key: LogicalKey::Named(named),
+            physical_key,
+            key_location: KeyLocation::Left,
+        };
+        for key in [
+            modifier(NamedKey::Control, PhysicalKey::ControlLeft),
+            modifier(NamedKey::Alt, PhysicalKey::AltLeft),
+            modifier(NamedKey::Shift, PhysicalKey::ShiftLeft),
+        ] {
+            let event = input.process_event(PlayerEvent::KeyDown { key });
+            assert!(event.is_some());
+        }
+
+        let stale = input.stale_modifiers(true, false, false);
+        assert_eq!(stale.len(), 2);
+        for key in stale {
+            let event = input.process_event(PlayerEvent::KeyUp { key });
+            assert!(event.is_some());
+        }
+        assert!(!input.is_key_down(KeyCode::CONTROL));
+        assert!(!input.is_key_down(KeyCode::ALT));
+        assert!(input.is_key_down(KeyCode::SHIFT));
+        assert!(input.stale_modifiers(true, false, false).is_empty());
     }
 }

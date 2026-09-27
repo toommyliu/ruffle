@@ -609,6 +609,11 @@ impl RuffleHandle {
                             y: js_event.offset_y() * instance.device_pixel_ratio,
                         };
                         let _ = instance.with_core_mut(|core| {
+                            core.release_stale_modifiers(
+                                js_event.shift_key(),
+                                js_event.ctrl_key(),
+                                js_event.alt_key(),
+                            );
                             core.handle_event(event);
                         });
                         if instance.has_focus {
@@ -676,7 +681,14 @@ impl RuffleHandle {
                             index: None,
                         };
                         let handled = instance
-                            .with_core_mut(|core| core.handle_event(event))
+                            .with_core_mut(|core| {
+                                core.release_stale_modifiers(
+                                    js_event.shift_key(),
+                                    js_event.ctrl_key(),
+                                    js_event.alt_key(),
+                                );
+                                core.handle_event(event)
+                            })
                             .unwrap_or_default();
 
                         if handled && matches!(button, MouseButton::Right) {
@@ -711,6 +723,11 @@ impl RuffleHandle {
                             },
                         };
                         let _ = instance.with_core_mut(|core| {
+                            core.release_stale_modifiers(
+                                js_event.shift_key(),
+                                js_event.ctrl_key(),
+                                js_event.alt_key(),
+                            );
                             core.handle_event(event);
                         });
 
@@ -776,6 +793,11 @@ impl RuffleHandle {
                             let _ = instance.with_core_mut(|core| {
                                 let key = web_input_to_ruffle_key_descriptor(&js_event);
                                 let is_ctrl_cmd = js_event.ctrl_key() || js_event.meta_key();
+                                core.release_stale_modifiers(
+                                    js_event.shift_key(),
+                                    js_event.ctrl_key(),
+                                    js_event.alt_key(),
+                                );
                                 core.handle_event(PlayerEvent::KeyDown { key });
 
                                 if let Some(control_code) = web_to_ruffle_text_control(

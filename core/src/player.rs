@@ -1060,6 +1060,12 @@ impl Player {
         }
     }
 
+    pub fn release_stale_modifiers(&mut self, shift: bool, control: bool, alt: bool) {
+        for key in self.input.stale_modifiers(shift, control, alt) {
+            self.handle_event(PlayerEvent::KeyUp { key });
+        }
+    }
+
     fn handle_focus_event(&mut self, event: PlayerEvent) -> bool {
         if let PlayerEvent::FocusLost = event {
             self.mutate_with_update_context(|context| {
