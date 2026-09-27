@@ -1,11 +1,11 @@
-use crate::avm2::object::Object;
+use crate::avm2::object::{Object, TObject as _, WeakObject};
 use crate::string::AvmString;
 use fnv::FnvBuildHasher;
 use gc_arena::Collect;
 use hashbrown::HashTable;
 use hashbrown::hash_table::Entry;
 use std::cell::Cell;
-use std::hash::{BuildHasher, Hash};
+use std::hash::{BuildHasher, Hash, Hasher};
 
 #[derive(Debug, Collect, Copy, Clone)]
 #[collect(no_drop)]
@@ -14,7 +14,7 @@ pub struct DynamicProperty<V> {
     pub enumerable: bool,
 }
 
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Collect)]
+#[derive(Copy, Clone, Collect)]
 #[collect(no_drop)]
 pub enum DynamicKey<'gc> {
     String(AvmString<'gc>),
@@ -24,7 +24,76 @@ pub enum DynamicKey<'gc> {
     // can be `number`
     Uint(u32),
     Object(Object<'gc>),
+    WeakObject(WeakObject<'gc>),
 }
+
+impl<'gc> DynamicKey<'gc> {
+    fn object_ptr(&self) -> Option<*const crate::avm2::object::ObjectPtr> {
+        match self {
+            DynamicKey::Object(o) => Some(o.as_ptr()),
+            DynamicKey::WeakObject(o) => Some(o.as_ptr()),
+            _ => None,
+        }
+    }
+
+    pub fn is_dead(&self) -> bool {
+        matches!(self, DynamicKey::WeakObject(o) if o.is_dropped())
+    }
+}
+
+impl PartialEq for DynamicKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DynamicKey::String(a), DynamicKey::String(b)) => a == b,
+            (DynamicKey::Uint(a), DynamicKey::Uint(b)) => a == b,
+            // Comparing addresses is safe for weak keys: a GcWeak keeps its
+            // allocation alive, so a dead key's address isn't reused.
+            _ => match (self.object_ptr(), other.object_ptr()) {
+                (Some(a), Some(b)) => std::ptr::eq(a, b),
+                _ => false,
+            },
+        }
+    }
+}
+
+impl Eq for DynamicKey<'_> {}
+
+// Hashes exactly as `#[derive(Hash)]` did before `WeakObject` existed (the
+// discriminant as an `isize`, then the field), since the hash decides bucket
+// order and so the enumeration order that content can observe. A weak key
+// hashes like the strong key for the same object.
+impl Hash for DynamicKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            DynamicKey::String(s) => {
+                0isize.hash(state);
+                s.hash(state);
+            }
+            DynamicKey::Uint(u) => {
+                1isize.hash(state);
+                u.hash(state);
+            }
+            DynamicKey::Object(_) | DynamicKey::WeakObject(_) => {
+                2isize.hash(state);
+                self.object_ptr().expect("object key").hash(state);
+            }
+        }
+    }
+}
+
+pub trait LiveKey {
+    fn is_live(&self) -> bool {
+        true
+    }
+}
+
+impl LiveKey for DynamicKey<'_> {
+    fn is_live(&self) -> bool {
+        !self.is_dead()
+    }
+}
+
+impl LiveKey for &str {}
 
 /// A HashMap designed for dynamic properties on an object.
 ///
@@ -44,13 +113,13 @@ pub struct DynamicMap<K, V> {
     real_index: Cell<usize>,
 }
 
-impl<K: Eq + Hash, V> Default for DynamicMap<K, V> {
+impl<K: Eq + Hash + LiveKey, V> Default for DynamicMap<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Eq + Hash, V> DynamicMap<K, V> {
+impl<K: Eq + Hash + LiveKey, V> DynamicMap<K, V> {
     fn hash_key(&self, key: &K) -> u64 {
         self.hasher.hash_one(key)
     }
@@ -99,8 +168,9 @@ impl<K: Eq + Hash, V> DynamicMap<K, V> {
         let num_buckets = self.table.num_buckets();
 
         for i in 0..num_buckets {
-            if let Some((_, v)) = self.table.get_bucket(i)
+            if let Some((k, v)) = self.table.get_bucket(i)
                 && v.enumerable
+                && k.is_live()
             {
                 count += 1;
 
@@ -188,8 +258,9 @@ impl<K: Eq + Hash, V> DynamicMap<K, V> {
 
         if !self.table.is_empty() && real < num_buckets {
             for i in real..num_buckets {
-                if let Some((_, v)) = self.table.get_bucket(i)
+                if let Some((k, v)) = self.table.get_bucket(i)
                     && v.enumerable
+                    && k.is_live()
                 {
                     self.real_index.set(i);
                     self.public_index.set(self.public_index.get() + 1);
@@ -217,6 +288,10 @@ impl<K: Eq + Hash, V> DynamicMap<K, V> {
 
     pub fn value_at(&self, index: usize) -> Option<&V> {
         self.pair_at(index).map(|(_, p)| &p.value)
+    }
+
+    pub fn prune_dead_keys(&mut self) {
+        self.table.retain(|(k, _)| k.is_live());
     }
 
     pub fn set_enumerable(&mut self, key: &K, enumerable: bool) {

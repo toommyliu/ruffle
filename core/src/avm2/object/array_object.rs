@@ -246,7 +246,7 @@ impl<'gc> TObject<'gc> for ArrayObject<'gc> {
     fn get_enumerant_name(
         self,
         index: u32,
-        _activation: &mut Activation<'_, 'gc>,
+        activation: &mut Activation<'_, 'gc>,
     ) -> Result<Value<'gc>, Error<'gc>> {
         let arr_len = self.0.array.borrow().length() as u32;
         if arr_len >= index {
@@ -257,7 +257,7 @@ impl<'gc> TObject<'gc> for ArrayObject<'gc> {
         } else {
             Ok(self
                 .base()
-                .get_enumerant_name(index - arr_len)
+                .get_enumerant_name(index - arr_len, activation.gc())
                 .unwrap_or(Value::Null))
         }
     }

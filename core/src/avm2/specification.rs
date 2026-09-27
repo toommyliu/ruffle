@@ -300,6 +300,10 @@ impl Definition {
                 DynamicKey::Object(object) => {
                     Value::Object(*object).coerce_to_string(activation).unwrap()
                 }
+                DynamicKey::WeakObject(object) => match object.upgrade(activation.gc()) {
+                    Some(object) => Value::Object(object).coerce_to_string(activation).unwrap(),
+                    None => continue,
+                },
             };
             if &name != b"constructor" {
                 Self::add_prototype_value(name, value.value, &mut definition.prototype, activation);

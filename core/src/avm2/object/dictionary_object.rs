@@ -10,6 +10,7 @@ use crate::string::AvmString;
 use core::fmt;
 use gc_arena::{Collect, Gc, GcWeak, Mutation};
 use ruffle_common::utils::HasPrefixField;
+use std::cell::Cell;
 
 /// A class instance allocator that allocates Dictionary objects.
 pub fn dictionary_allocator<'gc>(
@@ -18,7 +19,15 @@ pub fn dictionary_allocator<'gc>(
 ) -> Result<Object<'gc>, Error<'gc>> {
     let base = ScriptObjectData::new(class);
 
-    Ok(DictionaryObject(Gc::new(activation.gc(), DictionaryObjectData { base })).into())
+    Ok(DictionaryObject(Gc::new(
+        activation.gc(),
+        DictionaryObjectData {
+            base,
+            weak_keys: Cell::new(false),
+            inserts_since_prune: Cell::new(0),
+        },
+    ))
+    .into())
 }
 
 /// An object that allows associations between objects and values.
@@ -48,7 +57,15 @@ impl fmt::Debug for DictionaryObject<'_> {
 pub struct DictionaryObjectData<'gc> {
     /// Base script object
     base: ScriptObjectData<'gc>,
+
+    #[collect(require_static)]
+    weak_keys: Cell<bool>,
+
+    #[collect(require_static)]
+    inserts_since_prune: Cell<u32>,
 }
+
+const WEAK_PRUNE_INTERVAL: u32 = 64;
 
 impl<'gc> DictionaryObject<'gc> {
     /// Retrieve a value in the dictionary's object space.
@@ -62,9 +79,27 @@ impl<'gc> DictionaryObject<'gc> {
 
     /// Set a value in the dictionary's object space.
     pub fn set_property_by_object(self, name: Object<'gc>, value: Value<'gc>, mc: &Mutation<'gc>) {
-        self.base()
-            .values_mut(mc)
-            .insert(DynamicKey::Object(name), value);
+        if !self.0.weak_keys.get() {
+            self.base()
+                .values_mut(mc)
+                .insert(DynamicKey::Object(name), value);
+            return;
+        }
+
+        let inserts = self.0.inserts_since_prune.get() + 1;
+        let base = self.base();
+        let mut values = base.values_mut(mc);
+        if inserts >= WEAK_PRUNE_INTERVAL {
+            values.prune_dead_keys();
+            self.0.inserts_since_prune.set(0);
+        } else {
+            self.0.inserts_since_prune.set(inserts);
+        }
+        values.insert(DynamicKey::WeakObject(name.downgrade()), value);
+    }
+
+    pub fn set_weak_keys(self) {
+        self.0.weak_keys.set(true);
     }
 
     /// Delete a value from the dictionary's object space.

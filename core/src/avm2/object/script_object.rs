@@ -330,10 +330,11 @@ impl<'gc> ScriptObjectWrapper<'gc> {
             .unwrap_or(0)
     }
 
-    pub fn get_enumerant_name(self, index: u32) -> Option<Value<'gc>> {
+    pub fn get_enumerant_name(self, index: u32, mc: &Mutation<'gc>) -> Option<Value<'gc>> {
         self.values().key_at(index as usize).map(|key| match key {
             DynamicKey::String(name) => Value::String(*name),
             DynamicKey::Object(obj) => Value::Object(*obj),
+            DynamicKey::WeakObject(obj) => obj.upgrade(mc).map_or(Value::Null, Value::Object),
             DynamicKey::Uint(val) => Value::Number(*val as f64),
         })
     }

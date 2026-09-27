@@ -544,11 +544,13 @@ pub trait TObject<'gc>: 'gc + Collect<'gc> + Debug + Into<Object<'gc>> + Clone +
     fn get_enumerant_name(
         self,
         index: u32,
-        _activation: &mut Activation<'_, 'gc>,
+        activation: &mut Activation<'_, 'gc>,
     ) -> Result<Value<'gc>, Error<'gc>> {
         let base = self.base();
 
-        Ok(base.get_enumerant_name(index).unwrap_or(Value::Null))
+        Ok(base
+            .get_enumerant_name(index, activation.gc())
+            .unwrap_or(Value::Null))
     }
 
     /// Retrieve a given enumerable value by index.
@@ -949,6 +951,12 @@ macro_rules! define_weak_enum {
             $vis fn as_ptr(self) -> *const ObjectPtr {
                 match self {
                     $( Self::$variant(o) => GcWeak::as_ptr(o.0).cast(), )*
+                }
+            }
+
+            $vis fn is_dropped(self) -> bool {
+                match self {
+                    $( Self::$variant(o) => o.0.is_dropped(), )*
                 }
             }
 
