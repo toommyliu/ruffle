@@ -669,7 +669,9 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
         self.active_frame
             .submit_for_target(&self.descriptors, &self.target, frame_output);
-        self.offscreen_texture_pool = TexturePool::new();
+        self.offscreen_texture_pool
+            .end_frame(OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES);
+        self.texture_pool.end_frame(TEXTURE_MAX_IDLE_FRAMES);
         self.profiler
             .end_frame()
             .expect("Frame should end successfully");
@@ -1278,6 +1280,10 @@ pub struct ActiveFrame {
     pub command_encoder: wgpu::CommandEncoder,
     draws_since_flush: u32,
 }
+
+const OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES: u64 = 60;
+
+const TEXTURE_MAX_IDLE_FRAMES: u64 = 600;
 
 static PASSES_SINCE_SUBMIT: AtomicU64 = AtomicU64::new(0);
 

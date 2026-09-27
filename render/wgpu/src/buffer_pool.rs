@@ -12,6 +12,9 @@ type Constructor<Type, Description> = Box<dyn Fn(&Descriptors, &Description) -> 
 pub struct TexturePool {
     pools: FnvHashMap<TextureKey, BufferPool<(wgpu::Texture, wgpu::TextureView), AlwaysCompatible>>,
     globals_cache: FnvHashMap<GlobalsKey, Arc<Globals>>,
+    frame: u64,
+    last_used: FnvHashMap<TextureKey, u64>,
+    globals_last_used: FnvHashMap<GlobalsKey, u64>,
 }
 
 impl TexturePool {
@@ -33,6 +36,7 @@ impl TexturePool {
             format,
             sample_count,
         };
+        self.last_used.insert(key, self.frame);
         let pool = self.pools.entry(key).or_insert_with(|| {
             let label = if cfg!(feature = "render_debug_labels") {
                 use std::sync::atomic::{AtomicU32, Ordering};
@@ -66,11 +70,13 @@ impl TexturePool {
         viewport_width: u32,
         viewport_height: u32,
     ) -> Arc<Globals> {
+        let key = GlobalsKey {
+            viewport_width,
+            viewport_height,
+        };
+        self.globals_last_used.insert(key, self.frame);
         self.globals_cache
-            .entry(GlobalsKey {
-                viewport_width,
-                viewport_height,
-            })
+            .entry(key)
             .or_insert_with(|| {
                 Arc::new(Globals::new(
                     &descriptors.device,
@@ -80,6 +86,17 @@ impl TexturePool {
                 ))
             })
             .clone()
+    }
+
+    pub fn end_frame(&mut self, max_idle_frames: u64) {
+        let frame = self.frame;
+        let fresh = |last: &u64| frame - *last <= max_idle_frames;
+        self.last_used.retain(|_, last| fresh(last));
+        self.pools.retain(|key, _| self.last_used.contains_key(key));
+        self.globals_last_used.retain(|_, last| fresh(last));
+        self.globals_cache
+            .retain(|key, _| self.globals_last_used.contains_key(key));
+        self.frame += 1;
     }
 }
 
