@@ -599,20 +599,16 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 let mut scope = self
                     .profiler
                     .scope("Filters", &mut self.active_frame.command_encoder);
-                // We're relying on there being no impotent filters here,
-                // so that we can safely start by using the actual CAB texture.
-                // It's guaranteed that at least one filter would have used it and moved the target to something else,
-                // letting us safely copy back to it later.
+                // The content goes in a pooled texture rather than the cache,
+                // so the last filter can render straight into the cache (a
+                // one-pass blur has to read somewhere else).
                 let mut target = surface.draw_commands(
-                    RenderTargetMode::ExistingWithColor(
-                        texture.texture.clone(),
-                        wgpu::Color {
-                            r: f64::from(entry.clear.r) / 255.0,
-                            g: f64::from(entry.clear.g) / 255.0,
-                            b: f64::from(entry.clear.b) / 255.0,
-                            a: f64::from(entry.clear.a) / 255.0,
-                        },
-                    ),
+                    RenderTargetMode::FreshWithColor(wgpu::Color {
+                        r: f64::from(entry.clear.r) / 255.0,
+                        g: f64::from(entry.clear.g) / 255.0,
+                        b: f64::from(entry.clear.b) / 255.0,
+                        a: f64::from(entry.clear.a) / 255.0,
+                    }),
                     &self.descriptors,
                     &self.meshes,
                     entry.commands,
