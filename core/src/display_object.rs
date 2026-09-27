@@ -364,6 +364,8 @@ pub struct DisplayObjectBase<'gc> {
 
     /// Rectangle used for 9-slice scaling (`DisplayObject.scale9grid`).
     scaling_grid: Cell<Rectangle<Twips>>,
+
+    global_matrix: Cell<(u32, Matrix)>,
 }
 
 #[derive(Clone)]
@@ -409,8 +411,52 @@ impl Default for DisplayObjectBase<'_> {
             scroll_rect: Cell::new(None),
             next_scroll_rect: Default::default(),
             scaling_grid: Default::default(),
+            global_matrix: Cell::new((0, Matrix::IDENTITY)),
         }
     }
+}
+
+thread_local! {
+    static GLOBAL_MATRIX_GENERATION: Cell<u32> = const { Cell::new(0) };
+    static LAST_GLOBAL_MATRIX_GENERATION: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Only for code that can't move or reparent display objects.
+pub struct GlobalMatrixCache {
+    was_enabled: bool,
+}
+
+impl GlobalMatrixCache {
+    pub fn enable() -> Self {
+        Self {
+            was_enabled: set_global_matrix_cache(true),
+        }
+    }
+
+    pub fn suspend() -> Self {
+        Self {
+            was_enabled: set_global_matrix_cache(false),
+        }
+    }
+}
+
+impl Drop for GlobalMatrixCache {
+    fn drop(&mut self) {
+        set_global_matrix_cache(self.was_enabled);
+    }
+}
+
+fn set_global_matrix_cache(enabled: bool) -> bool {
+    let generation = if enabled {
+        LAST_GLOBAL_MATRIX_GENERATION.with(|last| {
+            let next = last.get().wrapping_add(1).max(1);
+            last.set(next);
+            next
+        })
+    } else {
+        0
+    };
+    GLOBAL_MATRIX_GENERATION.replace(generation) != 0
 }
 
 impl<'gc> DisplayObjectBase<'gc> {
@@ -1557,6 +1603,26 @@ pub trait TDisplayObject<'gc>:
     /// Should only be used to implement 'Transform.concatenatedMatrix'
     #[no_dynamic]
     fn local_to_global_matrix_without_own_scroll_rect(self) -> Matrix {
+        let generation = GLOBAL_MATRIX_GENERATION.get();
+        if generation != 0 {
+            let (stamp, matrix) = self.base().global_matrix.get();
+            if stamp == generation {
+                return matrix;
+            }
+            let matrix = match self.parent() {
+                Some(parent) if parent.as_stage().is_none() => {
+                    let mut parent_matrix = parent.local_to_global_matrix_without_own_scroll_rect();
+                    if let Some(rect) = parent.scroll_rect() {
+                        parent_matrix *= Matrix::translate(-rect.x_min, -rect.y_min);
+                    }
+                    parent_matrix * self.base().matrix()
+                }
+                _ => self.base().matrix(),
+            };
+            self.base().global_matrix.set((generation, matrix));
+            return matrix;
+        }
+
         let mut node = self.parent();
         let mut matrix = self.base().matrix();
         while let Some(display_object) = node {

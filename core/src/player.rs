@@ -30,8 +30,8 @@ use crate::context_menu::{
 };
 use crate::display_object::Avm2MousePick;
 use crate::display_object::{
-    EditText, GotoInfo, InteractiveObject, Stage, StageAlign, StageDisplayState, StageScaleMode,
-    StopOrPlay, TInteractiveObject, WindowMode,
+    EditText, GlobalMatrixCache, GotoInfo, InteractiveObject, Stage, StageAlign, StageDisplayState,
+    StageScaleMode, StopOrPlay, TInteractiveObject, WindowMode,
 };
 use crate::events::GamepadButton;
 use crate::events::PlayerNotification;
@@ -3255,6 +3255,7 @@ fn run_mouse_pick<'gc>(
     context.stage.iter_render_list().rev().find_map(|level| {
         level.as_interactive().and_then(|l| {
             if l.as_displayobject().movie().is_action_script_3() {
+                let _matrices = GlobalMatrixCache::enable();
                 let pick = l
                     .mouse_pick_avm2(context, *context.mouse_position, require_button_mode)
                     .combine_with_parent(context.stage.into());

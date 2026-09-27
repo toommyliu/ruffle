@@ -5,7 +5,7 @@ use crate::backend::ui::MouseCursor;
 use crate::context::RenderContext;
 use crate::context::UpdateContext;
 use crate::display_object::TInteractiveObject;
-use crate::display_object::{BoundsMode, DisplayObjectBase, DisplayObjectPtr};
+use crate::display_object::{BoundsMode, DisplayObjectBase, DisplayObjectPtr, GlobalMatrixCache};
 use crate::events::{ClipEvent, ClipEventResult};
 use crate::prelude::*;
 
@@ -181,9 +181,10 @@ impl<'gc> TInteractiveObject<'gc> for LoaderDisplay<'gc> {
                         return int
                             .mouse_pick_avm2(context, point, require_button_mode)
                             .combine_with_parent(self.into());
-                    } else if let Some(result) =
+                    } else if let Some(result) = {
+                        let _matrices = GlobalMatrixCache::suspend();
                         int.mouse_pick_avm1(context, point, require_button_mode)
-                    {
+                    } {
                         return Avm2MousePick::Hit(result).combine_with_parent(self.into());
                     }
                 }

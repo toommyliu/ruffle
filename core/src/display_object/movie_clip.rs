@@ -24,7 +24,7 @@ use crate::display_object::interactive::{
 };
 use crate::display_object::{
     Avm1Button, Avm1TextFieldBinding, Avm2Button, BoundsMode, DisplayObjectBase, DisplayObjectPtr,
-    EditText, Graphic, MorphShape, Text, Video,
+    EditText, GlobalMatrixCache, Graphic, MorphShape, Text, Video,
 };
 use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult};
@@ -3198,6 +3198,7 @@ impl<'gc> TInteractiveObject<'gc> for MovieClip<'gc> {
                     if child.as_displayobject().movie().is_action_script_3() {
                         child.mouse_pick_avm2(context, point, require_button_mode)
                     } else {
+                        let _matrices = GlobalMatrixCache::suspend();
                         let avm1_result =
                             child.mouse_pick_avm1(context, point, require_button_mode);
                         if let Some(result) = avm1_result {
@@ -3258,8 +3259,8 @@ impl<'gc> TInteractiveObject<'gc> for MovieClip<'gc> {
             }
 
             // Check drawing, because this selects the current clip, it must have mouse enabled
-            if self.world_bounds(BoundsMode::Engine).contains(point)
-                && let Some(drawing) = self.drawing()
+            if let Some(drawing) = self.drawing()
+                && self.world_bounds(BoundsMode::Engine).contains(point)
                 && drawing.hit_test(local_matrix * point, &local_matrix)
             {
                 return if self.mouse_enabled() {
