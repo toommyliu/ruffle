@@ -206,6 +206,11 @@ impl Filters {
         }
     }
 
+    /// Applies `filter` to `source`. Some filters can render their result
+    /// straight into `destination` (a texture the size of `source`'s region
+    /// that it doesn't read), saving a copy; check the returned target's
+    /// texture to see whether this one did.
+    #[expect(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         descriptors: &Descriptors,
@@ -214,6 +219,7 @@ impl Filters {
         staging_belt: &mut StagingBelt,
         source: FilterSource,
         filter: Filter,
+        destination: Option<&wgpu::Texture>,
     ) -> CommandTarget {
         let target = match filter {
             Filter::ColorMatrixFilter(filter) => Some(descriptors.filters.color_matrix.apply(
@@ -231,6 +237,7 @@ impl Filters {
                 staging_belt,
                 &source,
                 &filter,
+                destination,
             ),
             Filter::ShaderFilter(shader) => Some(descriptors.filters.shader.apply(
                 descriptors,

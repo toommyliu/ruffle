@@ -622,7 +622,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     LayerRef::None,
                     &mut self.offscreen_texture_pool,
                 );
-                for filter in entry.filters {
+                let last = entry.filters.len() - 1;
+                for (i, filter) in entry.filters.into_iter().enumerate() {
                     target = self.descriptors.filters.apply(
                         &self.descriptors,
                         &mut scope.scope(filter.name()),
@@ -630,17 +631,20 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                         &mut self.active_frame.staging_belt,
                         FilterSource::for_entire_texture(target.color_texture()),
                         filter,
+                        (i == last).then_some(&texture.texture),
                     );
                 }
-                run_copy_pipeline(
-                    &self.descriptors,
-                    texture.texture.format(),
-                    &texture.texture.create_view(&Default::default()),
-                    target.color_view(),
-                    target.globals(),
-                    target.color_texture().sample_count(),
-                    &mut scope.scope("Copy filtered to CAB"),
-                );
+                if *target.color_texture() != texture.texture {
+                    run_copy_pipeline(
+                        &self.descriptors,
+                        texture.texture.format(),
+                        &texture.texture.create_view(&Default::default()),
+                        target.color_view(),
+                        target.globals(),
+                        target.color_texture().sample_count(),
+                        &mut scope.scope("Copy filtered to CAB"),
+                    );
+                }
             }
             // Periodically flush GPU work to prevent OOM when many cache entries
             // accumulate (e.g. when a large container's cacheAsBitmap is skipped
@@ -903,6 +907,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 size: source_size,
             },
             filter,
+            None,
         );
 
         let (dest_x, dest_y) = dest_point;

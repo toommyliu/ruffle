@@ -172,6 +172,7 @@ impl BevelFilter {
             staging_belt,
             source,
             &filter.inner_blur_filter(),
+            None,
         );
         let blurred_texture = if let Some(blurred) = &blurred {
             blurred.ensure_cleared(draw_encoder);

@@ -146,6 +146,7 @@ impl BlurFilter {
         })
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         descriptors: &Descriptors,
@@ -154,10 +155,26 @@ impl BlurFilter {
         staging_belt: &mut StagingBelt,
         source: &FilterSource,
         filter: &BlurFilterArgs,
+        destination: Option<&wgpu::Texture>,
     ) -> Option<CommandTarget> {
         let sample_count = source.texture.sample_count();
         let format = source.texture.format();
         let pipeline = self.pipeline(descriptors, sample_count);
+        let destination = destination.filter(|destination| {
+            destination.size()
+                == wgpu::Extent3d {
+                    width: source.size.0,
+                    height: source.size.1,
+                    depth_or_array_layers: 1,
+                }
+                && destination.format() == format
+                && destination.sample_count() == sample_count
+        });
+        let blurs = |strength: f32| strength.min(255.0) > 1.0;
+        let directions =
+            usize::from(blurs(filter.blur_x.to_f32())) + usize::from(blurs(filter.blur_y.to_f32()));
+        let total_passes = filter.num_passes() as usize * directions;
+        let mut passes = 0;
 
         let mut flip = CommandTarget::new(
             descriptors,
@@ -206,6 +223,13 @@ impl BlurFilter {
                     // A width of 1 or less is a noop (it'd just sample itself and nothing else)
                     continue;
                 }
+
+                passes += 1;
+                // The last pass can render straight into the destination, unless
+                // it reads from it (a single pass, reading the source).
+                let into_destination = destination.filter(|destination| {
+                    passes == total_passes && !(first && *destination == source.texture)
+                });
 
                 let (previous_view, previous_vertices, previous_width, previous_height) = if first {
                     first = false;
@@ -266,6 +290,30 @@ impl BlurFilter {
                 staging_belt
                     .write_buffer(draw_encoder, &self.uniform_buffer, 0, self.uniform_size)
                     .copy_from_slice(bytemuck::cast_slice(&[uniform]));
+
+                if let Some(destination) = into_destination {
+                    let target = CommandTarget::new(
+                        descriptors,
+                        texture_pool,
+                        destination.size(),
+                        format,
+                        sample_count,
+                        RenderTargetMode::ExistingWithColor(
+                            destination.clone(),
+                            wgpu::Color::TRANSPARENT,
+                        ),
+                        draw_encoder,
+                    );
+                    self.render_with_uniform_buffers(
+                        descriptors,
+                        draw_encoder,
+                        pipeline,
+                        &target,
+                        previous_view,
+                        previous_vertices,
+                    );
+                    return Some(target);
+                }
 
                 self.render_with_uniform_buffers(
                     descriptors,
