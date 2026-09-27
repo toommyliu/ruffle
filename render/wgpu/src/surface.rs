@@ -197,13 +197,19 @@ impl Surface {
                     num_masks = renderer.num_masks();
                     mask_state = renderer.mask_state();
                 }
-                Chunk::CopyParent { region } => {
-                    let blend_buffer = target.update_blend_buffer_region(
-                        descriptors,
-                        texture_pool,
-                        draw_encoder,
-                        region,
-                    );
+                Chunk::CopyParent { regions } => {
+                    let mut blend_buffer = None;
+                    for region in regions {
+                        blend_buffer = Some(target.update_blend_buffer_region(
+                            descriptors,
+                            texture_pool,
+                            draw_encoder,
+                            region,
+                        ));
+                    }
+                    let Some(blend_buffer) = blend_buffer else {
+                        continue;
+                    };
                     parent_copy.get_or_insert_with(|| {
                         descriptors
                             .device

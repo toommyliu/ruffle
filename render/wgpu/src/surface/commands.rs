@@ -444,7 +444,7 @@ pub enum Chunk {
         needs_stencil: bool,
     },
     CopyParent {
-        region: PixelRegion,
+        regions: Vec<PixelRegion>,
     },
 }
 
@@ -497,6 +497,29 @@ pub enum DrawCommand {
 }
 
 impl DrawCommand {
+    fn set_indices(&mut self, index: u32, offset: Option<wgpu::BufferAddress>) {
+        match self {
+            DrawCommand::RenderBitmap {
+                instance_index,
+                vertex_offset,
+                ..
+            } => {
+                *instance_index = index;
+                *vertex_offset = offset;
+            }
+            DrawCommand::RenderTexture { instance_index, .. }
+            | DrawCommand::RenderAlphaMask { instance_index, .. }
+            | DrawCommand::RenderShape { instance_index, .. }
+            | DrawCommand::DrawRect { instance_index }
+            | DrawCommand::DrawLine { instance_index }
+            | DrawCommand::DrawLineRect { instance_index } => *instance_index = index,
+            DrawCommand::PushMask
+            | DrawCommand::ActivateMask
+            | DrawCommand::DeactivateMask
+            | DrawCommand::PopMask => {}
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             DrawCommand::RenderBitmap { .. } => "render bitmap",
@@ -519,6 +542,115 @@ pub enum LayerRef<'a> {
     None,
     Current,
     Parent(&'a CommandTarget),
+}
+
+#[derive(Clone, Copy)]
+struct Footprint {
+    region: PixelRegion,
+    reads_below: bool,
+}
+
+struct PendingDraw {
+    transform: Transforms,
+    vertices: Option<[PosUvVertex; 4]>,
+    command: DrawCommand,
+}
+
+const BATCH_TILE_SIZE: u32 = 16;
+
+/// A draw goes one level above every earlier draw it overlaps if it reads
+/// what's below, and at the highest of their levels otherwise. Emitting the
+/// draws level by level then renders the same image as drawing them in order.
+#[derive(Default)]
+struct DrawBatch {
+    tiles: Vec<u16>,
+    columns: u32,
+    levels: Vec<BatchLevel>,
+}
+
+#[derive(Default)]
+struct BatchLevel {
+    copies: Vec<PixelRegion>,
+    items: Vec<BatchItem>,
+}
+
+// Draws are nearly every item, so boxing them would only add allocations.
+#[expect(clippy::large_enum_variant)]
+enum BatchItem {
+    Draw(PendingDraw),
+    Blend(Chunk),
+    /// Everything from a `push_mask` with no mask active to its `pop_mask`.
+    /// It stays together and in order, and leaves the stencil buffer as it
+    /// found it, so it can move like a single draw.
+    Masked(Vec<MaskedItem>),
+}
+
+enum MaskedItem {
+    Draw(PendingDraw),
+    Mask(DrawCommand),
+    Copy(PixelRegion),
+    Blend(Chunk),
+}
+
+#[derive(Default)]
+struct MaskedBlock {
+    items: Vec<MaskedItem>,
+    regions: Vec<PixelRegion>,
+    reads_below: bool,
+}
+
+impl DrawBatch {
+    fn add(
+        &mut self,
+        width: u32,
+        height: u32,
+        regions: &[PixelRegion],
+        reads_below: bool,
+        copy: Option<PixelRegion>,
+        item: BatchItem,
+    ) {
+        if self.tiles.is_empty() {
+            self.columns = width.div_ceil(BATCH_TILE_SIZE).max(1);
+            let rows = height.div_ceil(BATCH_TILE_SIZE).max(1);
+            self.tiles = vec![0; (self.columns * rows) as usize];
+        }
+        let columns = self.columns;
+        let tile_indices = |region: &PixelRegion| {
+            let x = (region.x_min / BATCH_TILE_SIZE)..=((region.x_max - 1) / BATCH_TILE_SIZE);
+            let y = (region.y_min / BATCH_TILE_SIZE)..=((region.y_max - 1) / BATCH_TILE_SIZE);
+            y.flat_map(move |row| {
+                x.clone()
+                    .map(move |column| (row * columns + column) as usize)
+            })
+        };
+        let touched = || regions.iter().filter(|region| !region.is_empty());
+        let top = touched()
+            .flat_map(tile_indices)
+            .map(|i| self.tiles[i])
+            .max();
+        let level = match top {
+            None => 0,
+            Some(top) if reads_below => top,
+            Some(top) => top.saturating_sub(1),
+        };
+        for i in touched().flat_map(tile_indices) {
+            self.tiles[i] = self.tiles[i].max(level + 1);
+        }
+        let level = usize::from(level);
+        if self.levels.len() <= level {
+            self.levels.resize_with(level + 1, Default::default);
+        }
+        let entry = &mut self.levels[level];
+        entry
+            .copies
+            .extend(copy.filter(|region| !region.is_empty()));
+        entry.items.push(item);
+    }
+
+    fn take_levels(&mut self) -> Vec<BatchLevel> {
+        self.tiles.fill(0);
+        mem::take(&mut self.levels)
+    }
 }
 
 /// Replaces every blend with a RenderBitmap, with the subcommands rendered out to a temporary texture
@@ -571,6 +703,8 @@ struct WgpuCommandHandler<'encoder, 'global: 'encoder> {
     vertices: BufferBuilder,
     needs_stencil: bool,
     num_masks: i32,
+    batch: DrawBatch,
+    masked: Option<MaskedBlock>,
 }
 
 impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
@@ -614,6 +748,8 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             vertices,
             needs_stencil: false,
             num_masks: 0,
+            batch: DrawBatch::default(),
+            masked: None,
         }
     }
 
@@ -639,8 +775,174 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
     /// Every complex blend will be its own item, but every other draw will be chunked together
     fn chunk_blends(&mut self, commands: CommandList) -> Vec<Chunk> {
         commands.execute(self);
+        self.finish_masked_block();
+        self.flush_batch();
         self.flush_current();
         mem::take(&mut self.result)
+    }
+
+    fn flush_batch(&mut self) {
+        for level in self.batch.take_levels() {
+            if !level.copies.is_empty() {
+                self.flush_current();
+                self.result.push(Chunk::CopyParent {
+                    regions: level.copies,
+                });
+            }
+            for item in level.items {
+                match item {
+                    BatchItem::Draw(draw) => self.push_pending(draw),
+                    BatchItem::Blend(chunk) => {
+                        self.flush_current();
+                        self.result.push(chunk);
+                    }
+                    BatchItem::Masked(items) => {
+                        self.needs_stencil = true;
+                        for item in items {
+                            match item {
+                                MaskedItem::Draw(draw) => self.push_pending(draw),
+                                MaskedItem::Mask(command) => self.current.push(command),
+                                MaskedItem::Copy(region) => {
+                                    self.flush_current();
+                                    self.result.push(Chunk::CopyParent {
+                                        regions: vec![region],
+                                    });
+                                }
+                                MaskedItem::Blend(chunk) => {
+                                    self.flush_current();
+                                    self.result.push(chunk);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_pending(&mut self, draw: PendingDraw) {
+        let mut command = draw.command;
+        self.push_draw(
+            draw.transform,
+            draw.vertices.as_ref().map(|v| &v[..]),
+            |instance_index, vertex_offset| {
+                command.set_indices(instance_index, vertex_offset);
+                command
+            },
+        );
+    }
+
+    fn record_mask(&mut self, command: DrawCommand) {
+        self.masked
+            .get_or_insert_with(Default::default)
+            .items
+            .push(MaskedItem::Mask(command));
+    }
+
+    fn add_to_batch(
+        &mut self,
+        width: u32,
+        height: u32,
+        regions: &[PixelRegion],
+        reads_below: bool,
+        copy: Option<PixelRegion>,
+        item: BatchItem,
+    ) {
+        self.batch
+            .add(width, height, regions, reads_below, copy, item);
+    }
+
+    fn finish_masked_block(&mut self) {
+        if let Some(block) = self.masked.take() {
+            self.add_to_batch(
+                self.width,
+                self.height,
+                &block.regions,
+                block.reads_below,
+                None,
+                BatchItem::Masked(block.items),
+            );
+        }
+    }
+
+    fn footprint(&self, matrix: &Matrix, bounds: swf::Rectangle<Twips>) -> PixelRegion {
+        let mut region = PixelRegion::from(*matrix * bounds);
+        region.x_min = region.x_min.saturating_sub(1);
+        region.y_min = region.y_min.saturating_sub(1);
+        region.x_max = region.x_max.saturating_add(1);
+        region.y_max = region.y_max.saturating_add(1);
+        region.clamp(self.width, self.height);
+        region
+    }
+
+    /// Compositing a layer of `commands` changes only the pixels they land on:
+    /// layers start transparent, and blends leave what's below a transparent
+    /// pixel alone (except Alpha and Erase, which change the layer they're in).
+    fn commands_footprint(&self, commands: &CommandList) -> PixelRegion {
+        let mut union: Option<PixelRegion> = None;
+        let mut add = |region: PixelRegion| {
+            if !region.is_empty() {
+                match &mut union {
+                    Some(union) => union.union(region),
+                    None => union = Some(region),
+                }
+            }
+        };
+        for command in &commands.commands {
+            match command {
+                Command::RenderShape { shape, transform } => {
+                    add(self.footprint(&transform.matrix, as_mesh(shape).bounds))
+                }
+                Command::RenderBitmap {
+                    transform,
+                    pixel_snapping,
+                    region,
+                    ..
+                } => {
+                    let mut matrix = transform.matrix;
+                    pixel_snapping.apply(&mut matrix);
+                    matrix *= Matrix::scale(region.width() as f32, region.height() as f32);
+                    add(self.quad_footprint(&matrix).region)
+                }
+                Command::RenderStage3D { bitmap, transform } => {
+                    let texture = &as_texture(bitmap).texture;
+                    let matrix = transform.matrix
+                        * Matrix::scale(texture.width() as f32, texture.height() as f32);
+                    add(self.quad_footprint(&matrix).region)
+                }
+                Command::DrawRect { matrix, .. } => add(self.quad_footprint(matrix).region),
+                Command::DrawLine { matrix, .. } | Command::DrawLineRect { matrix, .. } => {
+                    let mut matrix = *matrix;
+                    matrix.tx += Twips::HALF_PX;
+                    matrix.ty += Twips::HALF_PX;
+                    add(self.quad_footprint(&matrix).region)
+                }
+                Command::RenderAlphaMask {
+                    maskee_commands, ..
+                } => add(self.commands_footprint(maskee_commands)),
+                Command::Blend(commands, _) => add(self.commands_footprint(commands)),
+                Command::PushMask
+                | Command::ActivateMask
+                | Command::DeactivateMask
+                | Command::PopMask => {}
+            }
+        }
+        union.unwrap_or(PixelRegion::for_whole_size(0, 0))
+    }
+
+    fn quad_footprint(&self, matrix: &Matrix) -> Footprint {
+        Footprint {
+            region: self.footprint(
+                matrix,
+                swf::Rectangle {
+                    x_min: Twips::ZERO,
+                    y_min: Twips::ZERO,
+                    x_max: Twips::ONE_PX,
+                    y_max: Twips::ONE_PX,
+                },
+            ),
+            reads_below: false,
+        }
     }
 
     fn flush_current(&mut self) {
@@ -666,11 +968,17 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
         matrix: Matrix,
         tz: f64,
         color_transform: ColorTransform,
+        footprint: Footprint,
         command_builder: impl FnOnce(u32) -> DrawCommand,
     ) {
-        self.add_to_current_with_vertices(matrix, tz, color_transform, None, |instance_index, _| {
-            command_builder(instance_index)
-        })
+        self.add_to_current_with_vertices(
+            matrix,
+            tz,
+            color_transform,
+            None,
+            footprint,
+            |instance_index, _| command_builder(instance_index),
+        )
     }
 
     fn add_to_current_with_vertices(
@@ -679,6 +987,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
         tz: f64,
         color_transform: ColorTransform,
         vertices: Option<&[PosUvVertex]>,
+        footprint: Footprint,
         command_builder: impl FnOnce(u32, Option<wgpu::BufferAddress>) -> DrawCommand,
     ) {
         let transform = Transforms {
@@ -696,6 +1005,36 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             mult_color: color_transform.mult_rgba_normalized(),
             add_color: color_transform.add_rgba_normalized(),
         };
+        let draw = PendingDraw {
+            transform,
+            vertices: vertices.map(|v| {
+                v.try_into()
+                    .expect("Batched draws have a quad's vertices or none")
+            }),
+            command: command_builder(0, vertices.map(|_| 0)),
+        };
+        if let Some(block) = &mut self.masked {
+            block.regions.push(footprint.region);
+            block.items.push(MaskedItem::Draw(draw));
+        } else {
+            let region = footprint.region;
+            self.add_to_batch(
+                self.width,
+                self.height,
+                &[region],
+                footprint.reads_below,
+                footprint.reads_below.then_some(region),
+                BatchItem::Draw(draw),
+            );
+        }
+    }
+
+    fn push_draw(
+        &mut self,
+        transform: Transforms,
+        vertices: Option<&[PosUvVertex]>,
+        command_builder: impl FnOnce(u32, Option<wgpu::BufferAddress>) -> DrawCommand,
+    ) {
         if let (Ok(transform_range), Ok(vertices_range)) = (
             self.transforms.add(&[transform]),
             vertices.map(|v| self.vertices.add(v)).transpose(),
@@ -751,11 +1090,16 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             ]
         };
 
+        let footprint = Footprint {
+            reads_below: matches!(blend, DirectBlend::Complex(_)),
+            ..self.quad_footprint(&matrix)
+        };
         self.add_to_current_with_vertices(
             matrix,
             transform.tz,
             transform.color_transform,
             Some(vertices),
+            footprint,
             |instance_index, vertex_offset| DrawCommand::RenderBitmap {
                 bitmap,
                 instance_index,
@@ -768,10 +1112,15 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
     }
 
     fn add_shape(&mut self, shape: ShapeHandle, transform: Transform, blend: DirectBlend) {
+        let footprint = Footprint {
+            region: self.footprint(&transform.matrix, as_mesh(&shape).bounds),
+            reads_below: matches!(blend, DirectBlend::Complex(_)),
+        };
         self.add_to_current(
             transform.matrix,
             transform.tz,
             transform.color_transform,
+            footprint,
             |instance_index| DrawCommand::RenderShape {
                 shape,
                 instance_index,
@@ -801,9 +1150,10 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             if region.is_empty() {
                 return true;
             }
-            self.flush_current();
-            self.result.push(Chunk::CopyParent { region });
-            self.needs_stencil = self.num_masks > 0;
+            if let Some(block) = &mut self.masked {
+                block.items.push(MaskedItem::Copy(region));
+                block.reads_below = true;
+            }
         }
         match commands.commands.pop() {
             Some(Command::RenderShape { shape, transform }) => {
@@ -867,6 +1217,7 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
         if self.try_blend_directly(&mut commands, &blend_mode) {
             return;
         }
+        let footprint = self.commands_footprint(&commands);
         let surface = Surface::new(
             self.descriptors,
             self.quality,
@@ -939,10 +1290,15 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                             ],
                             label: None,
                         });
+                let footprint = Footprint {
+                    region: footprint,
+                    reads_below: false,
+                };
                 self.add_to_current(
                     transform.matrix,
                     transform.tz,
                     transform.color_transform,
+                    footprint,
                     |instance_index| DrawCommand::RenderTexture {
                         _texture: texture,
                         binds: bind_group,
@@ -952,18 +1308,44 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                 );
             }
             blend_type => {
-                self.flush_current();
+                // Alpha and Erase change the nearest layer, and shaders may
+                // change pixels the layer doesn't cover.
+                let region = match blend_type {
+                    BlendType::Complex(ComplexBlend::Alpha | ComplexBlend::Erase)
+                    | BlendType::Shader(_) => None,
+                    _ => Some(footprint),
+                };
                 let chunk_blend_mode = match blend_type {
                     BlendType::Complex(complex) => ChunkBlendMode::Complex(complex),
                     BlendType::Shader(shader) => ChunkBlendMode::Shader(shader),
                     _ => unreachable!(),
                 };
-                self.result.push(Chunk::Blend {
+                let chunk = Chunk::Blend {
                     texture: target.take_color_texture(),
                     blend_mode: chunk_blend_mode,
                     needs_stencil: self.num_masks > 0,
-                });
-                self.needs_stencil = self.num_masks > 0;
+                };
+                if let Some(block) = &mut self.masked {
+                    block.regions.push(
+                        region.unwrap_or(PixelRegion::for_whole_size(self.width, self.height)),
+                    );
+                    block.reads_below = true;
+                    block.items.push(MaskedItem::Blend(chunk));
+                } else if let Some(region) = region {
+                    self.add_to_batch(
+                        self.width,
+                        self.height,
+                        &[region],
+                        true,
+                        None,
+                        BatchItem::Blend(chunk),
+                    );
+                } else {
+                    self.flush_batch();
+                    self.flush_current();
+                    self.result.push(chunk);
+                    self.needs_stencil = false;
+                }
             }
         }
     }
@@ -995,10 +1377,12 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                 texture.texture.height() as f32,
             );
         }
+        let footprint = self.quad_footprint(&matrix);
         self.add_to_current(
             matrix,
             transform.tz,
             transform.color_transform,
+            footprint,
             |instance_index| DrawCommand::RenderBitmap {
                 bitmap,
                 instance_index,
@@ -1015,10 +1399,12 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
     }
 
     fn draw_rect(&mut self, color: Color, matrix: Matrix) {
+        let footprint = self.quad_footprint(&matrix);
         self.add_to_current(
             matrix,
             0.0,
             ColorTransform::multiply_from(color),
+            footprint,
             |instance_index| DrawCommand::DrawRect { instance_index },
         );
     }
@@ -1031,10 +1417,12 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
         } else {
             matrix.tx += Twips::HALF_PX;
             matrix.ty += Twips::HALF_PX;
+            let footprint = self.quad_footprint(&matrix);
             self.add_to_current(
                 matrix,
                 0.0,
                 ColorTransform::multiply_from(color),
+                footprint,
                 |instance_index| DrawCommand::DrawLine { instance_index },
             );
         }
@@ -1048,35 +1436,39 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
         } else {
             matrix.tx += Twips::HALF_PX;
             matrix.ty += Twips::HALF_PX;
+            let footprint = self.quad_footprint(&matrix);
             self.add_to_current(
                 matrix,
                 0.0,
                 ColorTransform::multiply_from(color),
+                footprint,
                 |instance_index| DrawCommand::DrawLineRect { instance_index },
             );
         }
     }
 
     fn push_mask(&mut self) {
-        self.needs_stencil = true;
         self.num_masks += 1;
-        self.current.push(DrawCommand::PushMask);
+        self.masked
+            .get_or_insert_with(Default::default)
+            .items
+            .push(MaskedItem::Mask(DrawCommand::PushMask));
     }
 
     fn activate_mask(&mut self) {
-        self.needs_stencil = true;
-        self.current.push(DrawCommand::ActivateMask);
+        self.record_mask(DrawCommand::ActivateMask);
     }
 
     fn deactivate_mask(&mut self) {
-        self.needs_stencil = true;
-        self.current.push(DrawCommand::DeactivateMask);
+        self.record_mask(DrawCommand::DeactivateMask);
     }
 
     fn pop_mask(&mut self) {
-        self.needs_stencil = true;
         self.num_masks -= 1;
-        self.current.push(DrawCommand::PopMask);
+        self.record_mask(DrawCommand::PopMask);
+        if self.num_masks == 0 {
+            self.finish_masked_block();
+        }
     }
 
     fn render_alpha_mask(&mut self, maskee_commands: CommandList, mask_commands: CommandList) {
@@ -1141,13 +1533,18 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                 label: None,
             });
 
-        self.add_to_current(matrix, 0.0, Default::default(), |instance_index| {
-            DrawCommand::RenderAlphaMask {
+        let footprint = self.quad_footprint(&matrix);
+        self.add_to_current(
+            matrix,
+            0.0,
+            Default::default(),
+            footprint,
+            |instance_index| DrawCommand::RenderAlphaMask {
                 maskee,
                 mask,
                 binds,
                 instance_index,
-            }
-        });
+            },
+        );
     }
 }
