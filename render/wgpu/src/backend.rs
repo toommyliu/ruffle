@@ -356,6 +356,15 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             ));
         }
 
+        let index_format = if lyon_mesh
+            .draws
+            .iter()
+            .all(|draw| draw.vertices.len() <= usize::from(u16::MAX) + 1)
+        {
+            wgpu::IndexFormat::Uint16
+        } else {
+            wgpu::IndexFormat::Uint32
+        };
         for draw in lyon_mesh.draws {
             let draw_id = draws.len();
             if let Some(draw) = PendingDraw::new(
@@ -366,6 +375,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                 draw_id,
                 &mut vertex_buffer,
                 &mut index_buffer,
+                index_format,
             ) {
                 draws.push(draw);
             }
@@ -404,6 +414,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             draws,
             vertex_buffer: vertices.buffer().clone(),
             index_buffer: indices.buffer().clone(),
+            index_format,
             _allocations: [Some(vertices), Some(indices), uniforms],
             flat,
             bounds,

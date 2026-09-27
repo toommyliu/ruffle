@@ -216,12 +216,12 @@ impl<'encoder> CommandRenderer<'encoder> {
         &self,
         render_pass: &mut wgpu::RenderPass<'encoder>,
         vertices: wgpu::BufferSlice<'encoder>,
-        indices: wgpu::BufferSlice<'encoder>,
+        (indices, index_format): (wgpu::BufferSlice<'encoder>, wgpu::IndexFormat),
         num_indices: u32,
         instance_index: u32,
     ) {
         render_pass.set_vertex_buffer(0, vertices);
-        render_pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
+        render_pass.set_index_buffer(indices, index_format);
 
         render_pass.draw_indexed(0..num_indices, 0, instance_index..(instance_index + 1));
     }
@@ -259,7 +259,10 @@ impl<'encoder> CommandRenderer<'encoder> {
         self.draw(
             render_pass,
             vertex_slice,
-            self.descriptors.quad.indices.slice(..),
+            (
+                self.descriptors.quad.indices.slice(..),
+                wgpu::IndexFormat::Uint32,
+            ),
             6,
             instance_index,
         );
@@ -282,7 +285,10 @@ impl<'encoder> CommandRenderer<'encoder> {
         self.draw(
             render_pass,
             self.descriptors.quad.vertices_pos_uv.slice(..),
-            self.descriptors.quad.indices.slice(..),
+            (
+                self.descriptors.quad.indices.slice(..),
+                wgpu::IndexFormat::Uint32,
+            ),
             6,
             instance_index,
         );
@@ -324,7 +330,10 @@ impl<'encoder> CommandRenderer<'encoder> {
             self.draw(
                 render_pass,
                 mesh.vertex_buffer.slice(draw.vertices.clone()),
-                mesh.index_buffer.slice(draw.indices.clone()),
+                (
+                    mesh.index_buffer.slice(draw.indices.clone()),
+                    mesh.index_format,
+                ),
                 num_indices,
                 instance_index,
             );
@@ -348,7 +357,10 @@ impl<'encoder> CommandRenderer<'encoder> {
         self.draw(
             render_pass,
             self.descriptors.quad.vertices_pos.slice(..),
-            self.descriptors.quad.indices.slice(..),
+            (
+                self.descriptors.quad.indices.slice(..),
+                wgpu::IndexFormat::Uint32,
+            ),
             6,
             instance_index,
         );
@@ -364,7 +376,10 @@ impl<'encoder> CommandRenderer<'encoder> {
         self.draw(
             render_pass,
             self.descriptors.quad.vertices_pos_color.slice(..),
-            self.descriptors.quad.indices.slice(..),
+            (
+                self.descriptors.quad.indices.slice(..),
+                wgpu::IndexFormat::Uint32,
+            ),
             6,
             instance_index,
         );
@@ -380,11 +395,14 @@ impl<'encoder> CommandRenderer<'encoder> {
         self.draw(
             render_pass,
             self.descriptors.quad.vertices_pos_color.slice(..),
-            if RECT {
-                self.descriptors.quad.indices_line_rect.slice(..)
-            } else {
-                self.descriptors.quad.indices_line.slice(..)
-            },
+            (
+                if RECT {
+                    self.descriptors.quad.indices_line_rect.slice(..)
+                } else {
+                    self.descriptors.quad.indices_line.slice(..)
+                },
+                wgpu::IndexFormat::Uint32,
+            ),
             if RECT { 5 } else { 2 },
             instance_index,
         );

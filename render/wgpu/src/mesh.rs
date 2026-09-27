@@ -20,6 +20,7 @@ pub struct Mesh {
     pub draws: Vec<Draw>,
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
+    pub index_format: wgpu::IndexFormat,
     pub _allocations: [Option<ArenaAllocation>; 3],
     pub flat: bool,
     pub bounds: swf::Rectangle<swf::Twips>,
@@ -69,6 +70,7 @@ pub struct Draw {
 }
 
 impl PendingDraw {
+    #[expect(clippy::too_many_arguments)]
     pub fn new<T: RenderTarget>(
         backend: &mut WgpuRenderBackend<T>,
         source: &dyn BitmapSource,
@@ -77,6 +79,7 @@ impl PendingDraw {
         draw_id: usize,
         vertex_buffer: &mut BufferBuilder,
         index_buffer: &mut BufferBuilder,
+        index_format: wgpu::IndexFormat,
     ) -> Option<Self> {
         let vertices = match &draw.draw_type {
             TessDrawType::Color => {
@@ -111,9 +114,14 @@ impl PendingDraw {
             }
         };
 
-        let indices = index_buffer
-            .add(&draw.indices)
-            .expect("Mesh index buffer was too large!");
+        let indices = match index_format {
+            wgpu::IndexFormat::Uint16 => {
+                let indices: Vec<u16> = draw.indices.iter().map(|&i| i as u16).collect();
+                index_buffer.add(&indices)
+            }
+            wgpu::IndexFormat::Uint32 => index_buffer.add(&draw.indices),
+        }
+        .expect("Mesh index buffer was too large!");
 
         let index_count = draw.indices.len() as u32;
         let draw_type = match draw.draw_type {
