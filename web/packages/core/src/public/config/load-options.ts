@@ -328,16 +328,17 @@ export enum BackgroundExecutionMode {
  */
 export interface SocketProxy {
     /**
-     * Host used by the SWF.
+     * Host used by the SWF, or `*` for any host.
      */
     host: string;
     /**
-     * Port used by the SWF.
+     * Port used by the SWF, or 0 for any port.
      */
     port: number;
 
     /**
      * The proxy URL to use when SWF file tries to connect to the specified host and port.
+     * `{host}` and `{port}` in it are replaced with the ones the SWF connects to.
      */
     proxyUrl: string;
 }

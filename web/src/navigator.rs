@@ -501,11 +501,7 @@ impl NavigatorBackend for WebNavigatorBackend {
         receiver: Receiver<Vec<u8>>,
         sender: Sender<SocketAction>,
     ) {
-        let Some(proxy) = self
-            .socket_proxies
-            .iter()
-            .find(|x| x.host == host && x.port == port)
-        else {
+        let Some(proxy) = self.socket_proxies.iter().find(|x| x.matches(&host, port)) else {
             tracing::warn!("Missing WebSocket proxy for host {}, port {}", host, port);
             sender
                 .try_send(SocketAction::Connect(handle, ConnectionState::Failed))
@@ -513,9 +509,10 @@ impl NavigatorBackend for WebNavigatorBackend {
             return;
         };
 
-        tracing::info!("Connecting to {}", proxy.proxy_url);
+        let proxy_url = proxy.url_for(&host, port);
+        tracing::info!("Connecting to {}", proxy_url);
 
-        let ws = match WebSocket::open(&proxy.proxy_url) {
+        let ws = match WebSocket::open(&proxy_url) {
             Ok(x) => x,
             Err(e) => {
                 tracing::error!("Failed to create WebSocket, reason {:?}", e);

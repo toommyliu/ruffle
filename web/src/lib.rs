@@ -217,6 +217,19 @@ pub struct SocketProxy {
     proxy_url: String,
 }
 
+impl SocketProxy {
+    fn matches(&self, host: &str, port: u16) -> bool {
+        (self.host == "*" || self.host == host) && (self.port == 0 || self.port == port)
+    }
+
+    fn url_for(&self, host: &str, port: u16) -> String {
+        let host = String::from(js_sys::encode_uri_component(host));
+        self.proxy_url
+            .replace("{host}", &host)
+            .replace("{port}", &port.to_string())
+    }
+}
+
 /// Metadata about the playing SWF file to be passed back to JavaScript.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
