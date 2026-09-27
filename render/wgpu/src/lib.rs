@@ -124,7 +124,7 @@ impl PosUvVertex {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct PosColorVertex {
     position: [f32; 2],
-    color: [f32; 4],
+    color: [u8; 4],
 }
 
 impl From<TessVertex> for PosColorVertex {
@@ -132,10 +132,10 @@ impl From<TessVertex> for PosColorVertex {
         Self {
             position: [vertex.x, vertex.y],
             color: [
-                f32::from(vertex.color.r) / 255.0,
-                f32::from(vertex.color.g) / 255.0,
-                f32::from(vertex.color.b) / 255.0,
-                f32::from(vertex.color.a) / 255.0,
+                vertex.color.r,
+                vertex.color.g,
+                vertex.color.b,
+                vertex.color.a,
             ],
         }
     }

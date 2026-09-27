@@ -214,19 +214,19 @@ impl Quad {
         let vertices_pos_color = [
             PosColorVertex {
                 position: [0.0, 0.0],
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: [255, 255, 255, 255],
             },
             PosColorVertex {
                 position: [1.0, 0.0],
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: [255, 255, 255, 255],
             },
             PosColorVertex {
                 position: [1.0, 1.0],
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: [255, 255, 255, 255],
             },
             PosColorVertex {
                 position: [0.0, 1.0],
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: [255, 255, 255, 255],
             },
         ];
         let filter_vertices = [
