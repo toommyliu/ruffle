@@ -111,8 +111,24 @@ pub struct BitmapCache {
     /// The current contents of the cache, if any. Values are post-filters.
     bitmap: Option<BitmapInfo>,
 
+    texture_width: u32,
+    texture_height: u32,
+
     /// Whether we warned that this bitmap was too large to be cached
     warned_for_oversize: bool,
+}
+
+fn texture_size(width: u32, height: u32) -> (u32, u32) {
+    let pad = |n: u32| (n.saturating_add((n / 4).min(64)).saturating_add(31)) & !31;
+    (pad(width), pad(height))
+}
+
+fn fits_texture(width: u32, height: u32, texture_width: u32, texture_height: u32) -> bool {
+    let used = u64::from(width) * u64::from(height);
+    let texture = u64::from(texture_width) * u64::from(texture_height);
+    width <= texture_width
+        && height <= texture_height
+        && (texture <= 4 * used || texture <= 128 * 128)
 }
 
 impl BitmapCache {
@@ -146,6 +162,7 @@ impl BitmapCache {
         actual_height: u32,
         draw_offset: Point<i32>,
         swf_version: u8,
+        exact_size: bool,
     ) {
         self.matrix_a = matrix.a;
         self.matrix_b = matrix.b;
@@ -155,10 +172,20 @@ impl BitmapCache {
         self.source_height = source_height;
         self.draw_offset = draw_offset;
         if let Some(current) = &mut self.bitmap
-            && current.width == actual_width
-            && current.height == actual_height
+            && if exact_size {
+                (actual_width, actual_height) == (self.texture_width, self.texture_height)
+            } else {
+                fits_texture(
+                    actual_width,
+                    actual_height,
+                    self.texture_width,
+                    self.texture_height,
+                )
+            }
         {
-            return; // No need to resize it
+            current.width = actual_width;
+            current.height = actual_height;
+            return;
         }
         let acceptable_size = if swf_version > 9 {
             let total = actual_width * actual_height;
@@ -172,11 +199,29 @@ impl BitmapCache {
             && let Some(actual_height) = NonZero::new(actual_height)
             && acceptable_size
         {
-            let handle = renderer.create_empty_texture(actual_width, actual_height);
-            self.bitmap = handle.ok().map(|handle| BitmapInfo {
-                width: actual_width.get(),
-                height: actual_height.get(),
-                handle,
+            let (texture_width, texture_height) = if exact_size {
+                (actual_width.get(), actual_height.get())
+            } else {
+                texture_size(actual_width.get(), actual_height.get())
+            };
+            let handle = NonZero::new(texture_width)
+                .zip(NonZero::new(texture_height))
+                .and_then(|(w, h)| renderer.create_empty_texture(w, h).ok())
+                .map(|handle| (handle, texture_width, texture_height))
+                .or_else(|| {
+                    renderer
+                        .create_empty_texture(actual_width, actual_height)
+                        .ok()
+                        .map(|handle| (handle, actual_width.get(), actual_height.get()))
+                });
+            self.bitmap = handle.map(|(handle, texture_width, texture_height)| {
+                self.texture_width = texture_width;
+                self.texture_height = texture_height;
+                BitmapInfo {
+                    width: actual_width.get(),
+                    height: actual_height.get(),
+                    handle,
+                }
             });
         } else {
             self.bitmap = None;
@@ -1019,6 +1064,12 @@ pub fn render_base<'gc>(
                 };
                 let draw_offset = Point::new(filter_rect.x_min, filter_rect.y_min);
                 if cache.is_dirty(&base_transform.matrix, width, height) {
+                    let exact_size = filters.iter().any(|filter| {
+                        matches!(
+                            filter,
+                            Filter::DisplacementMapFilter(_) | Filter::ShaderFilter(_)
+                        )
+                    });
                     cache.update(
                         context.renderer,
                         base_transform.matrix,
@@ -1028,6 +1079,7 @@ pub fn render_base<'gc>(
                         filter_rect.height() as u32,
                         draw_offset,
                         swf_version,
+                        exact_size,
                     );
                     cache_info = cache.bitmap().map(|bitmap| DrawCacheInfo {
                         bitmap,
