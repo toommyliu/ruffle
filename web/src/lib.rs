@@ -4,6 +4,7 @@
 mod audio;
 mod builder;
 mod external_interface;
+mod frame_stats;
 mod input;
 mod log_adapter;
 mod navigator;
@@ -1278,12 +1279,16 @@ impl RuffleHandle {
                 });
             }
 
+            let mut timings = frame_stats::Timings::start();
             core.tick(FloatDuration::from_millis(dt));
+            timings.ticked();
 
             // Render if the core signals a new frame, or if we resized.
             if core.needs_render() || new_dimensions.is_some() {
                 core.render();
+                timings.rendered();
             }
+            timings.report(core);
         });
     }
 
