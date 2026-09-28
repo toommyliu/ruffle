@@ -619,7 +619,7 @@ impl<'gc> TDisplayObject<'gc> for Avm2Button<'gc> {
             bounds = bounds.union(&child.render_bounds_with_transform(&matrix, true, view_matrix));
         }
 
-        if include_own_filters {
+        if include_own_filters && bounds.is_valid() {
             for mut filter in self.filters().iter().cloned() {
                 filter.scale(view_matrix.a, view_matrix.d);
                 bounds = filter.calculate_dest_rect(bounds);
