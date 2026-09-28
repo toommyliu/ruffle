@@ -364,6 +364,8 @@ pub struct Player {
     frame_accumulator: FloatDuration,
     recent_run_frame_timings: VecDeque<f64>,
 
+    frames_run: u64,
+
     /// Faked time passage for fooling hand-written busy-loop FPS limiters.
     time_offset: u32,
 
@@ -2075,6 +2077,7 @@ impl Player {
             return;
         }
 
+        self.frames_run += 1;
         self.update(|context| {
             // TODO: Is this order correct?
             run_all_phases_avm2(context);
@@ -2149,6 +2152,10 @@ impl Player {
             .submit_frame(background_color, commands, cache_draws);
 
         self.needs_render = false;
+    }
+
+    pub fn frames_run(&self) -> u64 {
+        self.frames_run
     }
 
     /// The current frame of the main timeline, if available.
@@ -2449,6 +2456,10 @@ impl Player {
         self.gc_arena.borrow_mut().collect_debt();
 
         rval
+    }
+
+    pub fn collect_garbage(&mut self) {
+        self.gc_arena.borrow_mut().finish_cycle();
     }
 
     pub fn flush_shared_objects(&mut self) {
@@ -3091,6 +3102,7 @@ impl PlayerBuilder {
                 frame_phase: Default::default(),
                 frame_accumulator: FloatDuration::ZERO,
                 recent_run_frame_timings: VecDeque::with_capacity(10),
+                frames_run: 0,
                 start_time: Instant::now(),
                 time_offset: 0,
                 time_til_next_timer: None,
