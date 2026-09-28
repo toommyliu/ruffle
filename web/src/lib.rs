@@ -29,7 +29,11 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
-use std::{cell::RefCell, error::Error, num::NonZeroI32};
+use std::{
+    cell::{Cell, RefCell},
+    error::Error,
+    num::NonZeroI32,
+};
 use tracing_subscriber::layer::{Layered, SubscriberExt};
 use tracing_subscriber::registry::Registry;
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
@@ -128,6 +132,7 @@ struct RuffleInstance {
     animation_handler_id: Option<NonZeroI32>,    // requestAnimationFrame id
     background_tick_mode: bool,
     mouse_move_callback: Option<JsCallback<PointerEvent>>,
+    pending_mouse_move: Cell<Option<PendingMouseMove>>,
     mouse_enter_callback: Option<JsCallback<PointerEvent>>,
     mouse_leave_callback: Option<JsCallback<PointerEvent>>,
     mouse_down_callback: Option<JsCallback<PointerEvent>>,
@@ -568,6 +573,7 @@ impl RuffleHandle {
             animation_handler_id: None,
             background_tick_mode: false,
             mouse_move_callback: None,
+            pending_mouse_move: Cell::new(None),
             mouse_enter_callback: None,
             mouse_leave_callback: None,
             mouse_down_callback: None,
@@ -618,18 +624,18 @@ impl RuffleHandle {
                 false,
                 move |js_event: PointerEvent| {
                     let _ = ruffle.with_instance(move |instance| {
-                        let event = PlayerEvent::MouseMove {
+                        let since = instance
+                            .pending_mouse_move
+                            .get()
+                            .map_or(js_event.time_stamp(), |pending| pending.since);
+                        instance.pending_mouse_move.set(Some(PendingMouseMove {
                             x: js_event.offset_x() * instance.device_pixel_ratio,
                             y: js_event.offset_y() * instance.device_pixel_ratio,
-                        };
-                        let _ = instance.with_core_mut(|core| {
-                            core.release_stale_modifiers(
-                                js_event.shift_key(),
-                                js_event.ctrl_key(),
-                                js_event.alt_key(),
-                            );
-                            core.handle_event(event);
-                        });
+                            shift: js_event.shift_key(),
+                            ctrl: js_event.ctrl_key(),
+                            alt: js_event.alt_key(),
+                            since,
+                        }));
                         if instance.has_focus {
                             js_event.prevent_default();
                         }
@@ -658,6 +664,7 @@ impl RuffleHandle {
                 false,
                 move |_js_event: PointerEvent| {
                     let _ = ruffle.with_instance(move |instance| {
+                        instance.flush_mouse_move();
                         let _ = instance.with_core_mut(|core| {
                             core.set_mouse_in_stage(false);
                             core.handle_event(PlayerEvent::MouseLeave);
@@ -675,6 +682,7 @@ impl RuffleHandle {
                 move |js_event: PointerEvent| {
                     let js_player_callback = js_player_callback.clone();
                     let _ = ruffle.with_instance(move |instance| {
+                        instance.flush_mouse_move();
                         if let Some(target) = js_event.current_target() {
                             let _ = target
                                 .unchecked_ref::<Element>()
@@ -721,6 +729,7 @@ impl RuffleHandle {
                 false,
                 move |js_event: PointerEvent| {
                     let _ = ruffle.with_instance(|instance| {
+                        instance.flush_mouse_move();
                         if let Some(target) = js_event.current_target() {
                             let _ = target
                                 .unchecked_ref::<Element>()
@@ -759,6 +768,7 @@ impl RuffleHandle {
                 false,
                 move |js_event: WheelEvent| {
                     let _ = ruffle.with_instance(|instance| {
+                        instance.flush_mouse_move();
                         let delta = match js_event.delta_mode() {
                             WheelEvent::DOM_DELTA_LINE => {
                                 MouseWheelDelta::Lines(-js_event.delta_y())
@@ -1260,6 +1270,20 @@ impl RuffleHandle {
             instance.timestamp = Some(timestamp);
         });
 
+        let _ = self.with_instance(|instance| {
+            if let Some(pending) = instance.pending_mouse_move.get() {
+                let frame_due = instance
+                    .with_core(|core| {
+                        !core.is_playing()
+                            || core.time_til_next_frame().as_secs_f64() * 1000.0 <= dt
+                    })
+                    .unwrap_or(true);
+                if frame_due || timestamp - pending.since >= MAX_MOUSE_MOVE_DELAY_MS {
+                    instance.flush_mouse_move();
+                }
+            }
+        });
+
         // Tick the Ruffle core.
         let _ = self.with_core_mut(|core| {
             for event in gamepad_button_events {
@@ -1316,8 +1340,31 @@ impl RuffleHandle {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PendingMouseMove {
+    x: f64,
+    y: f64,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    since: f64,
+}
+
+const MAX_MOUSE_MOVE_DELAY_MS: f64 = 50.0;
+
 impl RuffleInstance {
-    #[expect(dead_code)]
+    fn flush_mouse_move(&self) {
+        if let Some(pending) = self.pending_mouse_move.take() {
+            let _ = self.with_core_mut(|core| {
+                core.release_stale_modifiers(pending.shift, pending.ctrl, pending.alt);
+                core.handle_event(PlayerEvent::MouseMove {
+                    x: pending.x,
+                    y: pending.y,
+                });
+            });
+        }
+    }
+
     fn with_core<F, O>(&self, f: F) -> Result<O, RuffleInstanceError>
     where
         F: FnOnce(&ruffle_core::Player) -> O,
