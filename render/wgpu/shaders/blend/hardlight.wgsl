@@ -34,7 +34,11 @@ fn main_fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var src: vec4<f32> = textureSample(current_texture, texture_sampler, in.uv);
 
     if (src.a > 0.0) {
-        return vec4<f32>(src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a) + src.a * dst.a * blend_func(src.rgb / src.a, dst.rgb / dst.a), src.a + dst.a * (1.0 - src.a));
+        if (dst.a > 0.0) {
+            return vec4<f32>(src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a) + src.a * dst.a * blend_func(src.rgb / src.a, dst.rgb / dst.a), src.a + dst.a * (1.0 - src.a));
+        } else {
+            return src;
+        }
     } else {
         if (true) {
             // This needs to be in a branch because... reasons. Bug in naga.
