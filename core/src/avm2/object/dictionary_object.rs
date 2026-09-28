@@ -127,6 +127,28 @@ impl<'gc> TObject<'gc> for DictionaryObject<'gc> {
     ) {
     }
 
+    // Enumeration skips weak keys that have been dropped, but while the
+    // collector sweeps, a dead key isn't dropped yet and already can't be
+    // upgraded. Skip those too, or `for (k in dict)` would give `null`.
+    fn get_next_enumerant(
+        self,
+        mut last_index: u32,
+        activation: &mut Activation<'_, 'gc>,
+    ) -> Result<u32, Error<'gc>> {
+        let base = self.base();
+        loop {
+            let index = base.get_next_enumerant(last_index);
+            let dying = matches!(
+                base.values().key_at(index as usize),
+                Some(DynamicKey::WeakObject(key)) if key.upgrade(activation.gc()).is_none()
+            );
+            if index == 0 || !dying {
+                return Ok(index);
+            }
+            last_index = index;
+        }
+    }
+
     fn get_enumerant_value(
         self,
         index: u32,
