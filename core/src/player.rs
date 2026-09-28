@@ -1626,7 +1626,16 @@ impl Player {
                 && changed_mouse_buttons.is_empty()
                 && context.mouse_data.hovered.is_some();
 
-            let new_over_object = if mouse_in_stage {
+            // Picking walks the whole stage. When the hover update is skipped,
+            // the result is only used if the hovered object has disappeared
+            // (see below), so an idle mouse doesn't need a pick every tick.
+            let needs_pick = !skip_mouse_hover
+                || context.mouse_data.hovered.is_some_and(|hovered| {
+                    let hovered = hovered.as_displayobject();
+                    !hovered.visible()
+                        || (!hovered.movie().is_action_script_3() && hovered.avm1_removed())
+                });
+            let new_over_object = if mouse_in_stage && needs_pick {
                 run_mouse_pick(context, true)
             } else {
                 None
