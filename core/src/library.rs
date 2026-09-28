@@ -176,28 +176,7 @@ impl<'gc> MovieLibrary<'gc> {
     }
 
     fn resurrect(&self, fc: &Finalization<'gc>) -> bool {
-        struct Resurrect<'a, 'gc> {
-            fc: &'a Finalization<'gc>,
-            any_dead: bool,
-        }
-
-        impl<'gc> Trace<'gc> for Resurrect<'_, 'gc> {
-            fn trace_gc(&mut self, gc: Gc<'gc, ()>) {
-                if Gc::is_dead(self.fc, gc) {
-                    Gc::resurrect(self.fc, gc);
-                    self.any_dead = true;
-                }
-            }
-
-            fn trace_gc_weak(&mut self, _gc: GcWeak<'gc, ()>) {}
-        }
-
-        let mut resurrect = Resurrect {
-            fc,
-            any_dead: false,
-        };
-        self.trace(&mut resurrect);
-        resurrect.any_dead
+        crate::finalize::resurrect(fc, self)
     }
 
     /// Registers a character; returns `true` if successful, or `false` if a character with
@@ -547,7 +526,7 @@ impl<'gc> Library<'gc> {
         }
     }
 
-    pub fn finalize(&mut self, fc: &Finalization<'gc>) -> bool {
+    pub fn resurrect_in_use(&self, fc: &Finalization<'gc>) -> bool {
         let class_movies = self.avm2_class_registry.movies_of_live_classes(fc);
         let mut resurrected = false;
         for (movie, library) in self.movie_libraries.0.iter() {
@@ -555,10 +534,11 @@ impl<'gc> Library<'gc> {
                 resurrected |= library.resurrect(fc);
             }
         }
-        if resurrected {
-            return false;
-        }
+        resurrected
+    }
 
+    pub fn forget_unused(&mut self, fc: &Finalization<'gc>) {
+        let class_movies = self.avm2_class_registry.movies_of_live_classes(fc);
         // Not `retain`: weak_table's skips the entry after each one it
         // removes, and a library left here would keep characters that are
         // about to be freed.
@@ -577,7 +557,6 @@ impl<'gc> Library<'gc> {
         }
         self.avm2_class_registry.forget_dead_classes(fc);
         self.gc_cycles += 1;
-        true
     }
 
     fn in_use(

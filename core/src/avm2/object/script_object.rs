@@ -13,7 +13,7 @@ use crate::context::UpdateContext;
 use crate::string::AvmString;
 use gc_arena::barrier::{field, unlock};
 use gc_arena::{
-    Collect, DynamicRoot, Gc, GcWeak, Mutation, Rootable,
+    Collect, DynamicRoot, Finalization, Gc, GcWeak, Mutation, Rootable,
     lock::{Lock, RefLock},
 };
 use std::cell::{Ref, RefMut};
@@ -187,6 +187,14 @@ impl<'gc> ScriptObjectWrapper<'gc> {
         mc: &Mutation<'gc>,
     ) -> RefMut<'_, DynamicMap<DynamicKey<'gc>, Value<'gc>>> {
         unlock!(Gc::write(mc, self.0), ScriptObjectData, values).borrow_mut()
+    }
+
+    pub fn remove_dead_weak_keys(self, fc: &Finalization<'gc>) {
+        // SAFETY: Removing entries only drops pointers, so it needs no write
+        // barrier (which would also send the arena back to marking).
+        unsafe { self.0.values.as_ref_cell() }
+            .borrow_mut()
+            .remove_dead_weak_keys(fc);
     }
 
     fn bound_methods(&self) -> Ref<'_, Vec<Option<FunctionObject<'gc>>>> {

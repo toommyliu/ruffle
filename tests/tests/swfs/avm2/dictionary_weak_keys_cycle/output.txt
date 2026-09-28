@@ -1,0 +1,4 @@
+entries: 104
+entries after collecting: 2
+kept's value: true
+inner: inner, its value: true

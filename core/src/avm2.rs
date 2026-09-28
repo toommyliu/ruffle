@@ -13,7 +13,7 @@ use crate::avm2::globals::{
     init_native_system_classes,
 };
 use crate::avm2::method::{Method, NativeMethodImpl};
-use crate::avm2::object::FunctionObject;
+use crate::avm2::object::{DictionaryObject, DictionaryObjectWeak, FunctionObject};
 use crate::avm2::scope::ScopeChain;
 use crate::avm2::script::{Script, TranslationUnit};
 use crate::avm2::stack::Stack;
@@ -26,7 +26,7 @@ use crate::{PlayerMode, PlayerRuntime};
 
 use fnv::FnvHashMap;
 use gc_arena::lock::GcRefLock;
-use gc_arena::{Collect, Gc, Mutation};
+use gc_arena::{Collect, Finalization, Gc, Mutation};
 use ruffle_wstr::WStr;
 use std::sync::Arc;
 use swf::DoAbc2Flag;
@@ -171,6 +171,8 @@ pub struct Avm2<'gc> {
     /// currently present on the display list. This list keeps track of that.
     broadcast_list: FnvHashMap<AvmString<'gc>, Vec<WeakObject<'gc>>>,
 
+    weak_dictionaries: Vec<DictionaryObjectWeak<'gc>>,
+
     alias_to_class_map: FnvHashMap<AvmString<'gc>, ClassObject<'gc>>,
     class_to_alias_map: FnvHashMap<Class<'gc>, AvmString<'gc>>,
 
@@ -227,6 +229,7 @@ impl<'gc> Avm2<'gc> {
             native_custom_constructor_table: Default::default(),
             native_fast_call_list: Default::default(),
             broadcast_list: Default::default(),
+            weak_dictionaries: Vec::new(),
 
             alias_to_class_map: Default::default(),
             class_to_alias_map: Default::default(),
@@ -396,6 +399,39 @@ impl<'gc> Avm2<'gc> {
         }
 
         bucket.push(object.downgrade());
+    }
+
+    pub fn register_weak_dictionary(&mut self, dictionary: DictionaryObject<'gc>) {
+        self.weak_dictionaries
+            .push(DictionaryObjectWeak(Gc::downgrade(dictionary.0)));
+    }
+
+    pub fn resurrect_weak_values(&self, fc: &Finalization<'gc>) -> bool {
+        let mut resurrected = false;
+        for dictionary in &self.weak_dictionaries {
+            // A dictionary about to be collected may still be resurrected by
+            // something else; until then its values don't matter.
+            if !dictionary.0.is_dead(fc)
+                && let Some(dictionary) = dictionary.0.upgrade(fc)
+            {
+                resurrected |= DictionaryObject(dictionary)
+                    .base()
+                    .values()
+                    .resurrect_weak_values(fc);
+            }
+        }
+        resurrected
+    }
+
+    pub fn remove_dead_weak_keys(&mut self, fc: &Finalization<'gc>) {
+        self.weak_dictionaries.retain(|d| !d.0.is_dead(fc));
+        for dictionary in &self.weak_dictionaries {
+            if let Some(dictionary) = dictionary.0.upgrade(fc) {
+                DictionaryObject(dictionary)
+                    .base()
+                    .remove_dead_weak_keys(fc);
+            }
+        }
     }
 
     /// Dispatch an event on all objects in the current execution list.

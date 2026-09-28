@@ -1,0 +1,2 @@
+bad values: 0
+checked over 100000 values

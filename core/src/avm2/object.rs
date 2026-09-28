@@ -21,7 +21,7 @@ use crate::display_object::DisplayObject;
 use crate::html::TextFormat;
 use crate::streams::NetStream;
 use crate::string::AvmString;
-use gc_arena::{Collect, Gc, GcWeak, Mutation};
+use gc_arena::{Collect, Finalization, Gc, GcWeak, Mutation};
 use ruffle_macros::enum_trait_object;
 use std::cell::{Ref, RefMut};
 use std::fmt::Debug;
@@ -957,6 +957,12 @@ macro_rules! define_weak_enum {
             $vis fn is_dropped(self) -> bool {
                 match self {
                     $( Self::$variant(o) => o.0.is_dropped(), )*
+                }
+            }
+
+            $vis fn is_dead(self, fc: &Finalization<'gc>) -> bool {
+                match self {
+                    $( Self::$variant(o) => o.0.is_dead(fc), )*
                 }
             }
 

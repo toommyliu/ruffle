@@ -1,11 +1,11 @@
 //! Object representation for `flash.utils.Dictionary`
 
-use crate::avm2::Error;
 use crate::avm2::activation::Activation;
 use crate::avm2::dynamic_map::DynamicKey;
 use crate::avm2::object::script_object::ScriptObjectData;
 use crate::avm2::object::{ClassObject, Object, TObject};
 use crate::avm2::value::Value;
+use crate::avm2::{Avm2, Error};
 use crate::string::AvmString;
 use core::fmt;
 use gc_arena::{Collect, Gc, GcWeak, Mutation};
@@ -98,8 +98,10 @@ impl<'gc> DictionaryObject<'gc> {
         values.insert(DynamicKey::WeakObject(name.downgrade()), value);
     }
 
-    pub fn set_weak_keys(self) {
-        self.0.weak_keys.set(true);
+    pub fn set_weak_keys(self, avm2: &mut Avm2<'gc>) {
+        if !self.0.weak_keys.replace(true) {
+            avm2.register_weak_dictionary(self);
+        }
     }
 
     /// Delete a value from the dictionary's object space.

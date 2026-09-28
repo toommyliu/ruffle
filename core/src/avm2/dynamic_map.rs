@@ -1,7 +1,8 @@
 use crate::avm2::object::{Object, TObject as _, WeakObject};
 use crate::string::AvmString;
 use fnv::FnvBuildHasher;
-use gc_arena::Collect;
+use gc_arena::collect::Trace;
+use gc_arena::{Collect, Finalization};
 use hashbrown::HashTable;
 use hashbrown::hash_table::Entry;
 use std::cell::Cell;
@@ -85,11 +86,19 @@ pub trait LiveKey {
     fn is_live(&self) -> bool {
         true
     }
+
+    fn is_weak(&self) -> bool {
+        false
+    }
 }
 
 impl LiveKey for DynamicKey<'_> {
     fn is_live(&self) -> bool {
         !self.is_dead()
+    }
+
+    fn is_weak(&self) -> bool {
+        matches!(self, DynamicKey::WeakObject(_))
     }
 }
 
@@ -99,18 +108,49 @@ impl LiveKey for &str {}
 ///
 /// Uses `HashTable` directly to expose stable bucket indices, which are
 /// needed for correct iteration when entries are added or removed mid-iteration.
-#[derive(Debug, Clone, Collect)]
-#[collect(no_drop)]
+#[derive(Debug, Clone)]
 pub struct DynamicMap<K, V> {
     table: HashTable<(K, DynamicProperty<V>)>,
-    #[collect(require_static)]
     hasher: FnvBuildHasher,
     // The last index that was given back to flash
-    #[collect(require_static)]
     public_index: Cell<usize>,
     // The actual bucket index that represents where an item is in the table
-    #[collect(require_static)]
     real_index: Cell<usize>,
+}
+
+// SAFETY: Values of weak keys aren't traced. Before every sweep,
+// `Avm2::resurrect_weak_values` keeps those whose keys are reachable and
+// `Avm2::remove_dead_weak_keys` removes the rest.
+unsafe impl<'gc, K: Collect<'gc> + LiveKey, V: Collect<'gc>> Collect<'gc> for DynamicMap<K, V> {
+    const NEEDS_TRACE: bool = K::NEEDS_TRACE || V::NEEDS_TRACE;
+
+    fn trace<C: Trace<'gc>>(&self, cc: &mut C) {
+        for (key, property) in self.table.iter() {
+            cc.trace(key);
+            if !key.is_weak() {
+                cc.trace(&property.value);
+            }
+        }
+    }
+}
+
+impl<'gc, V: Collect<'gc>> DynamicMap<DynamicKey<'gc>, V> {
+    pub fn resurrect_weak_values(&self, fc: &Finalization<'gc>) -> bool {
+        let mut resurrected = false;
+        for (key, property) in self.table.iter() {
+            if let DynamicKey::WeakObject(key) = key
+                && !key.is_dead(fc)
+            {
+                resurrected |= crate::finalize::resurrect(fc, &property.value);
+            }
+        }
+        resurrected
+    }
+
+    pub fn remove_dead_weak_keys(&mut self, fc: &Finalization<'gc>) {
+        self.table
+            .retain(|(key, _)| !matches!(key, DynamicKey::WeakObject(key) if key.is_dead(fc)));
+    }
 }
 
 impl<K: Eq + Hash + LiveKey, V> Default for DynamicMap<K, V> {

@@ -303,7 +303,8 @@ impl<'gc> GcRootData<'gc> {
 type GcArena = gc_arena::Arena<Rootable![GcRoot<'_>]>;
 
 /// Nothing else may drive the arena: every sweep has to be preceded by the
-/// finalization here, which alone keeps alive what the movie libraries hold.
+/// finalization here, which alone keeps alive what the movie libraries and
+/// the values of weak dictionary keys hold.
 fn collect_garbage(arena: &mut GcArena, full: bool) {
     loop {
         if arena.collection_phase() == CollectionPhase::Sweeping {
@@ -326,7 +327,15 @@ fn collect_garbage(arena: &mut GcArena, full: bool) {
             // Finalizing only ever drops pointers, so it needs no write
             // barrier (which would send the arena back to marking).
             let data = unsafe { root.data.as_ref_cell() };
-            data.borrow_mut().library.finalize(fc)
+            let mut data = data.borrow_mut();
+            let resurrected =
+                data.library.resurrect_in_use(fc) | data.avm2.resurrect_weak_values(fc);
+            if resurrected {
+                return false;
+            }
+            data.library.forget_unused(fc);
+            data.avm2.remove_dead_weak_keys(fc);
+            true
         });
         if settled && let Some(marked) = arena.finish_marking() {
             marked.start_sweeping();
