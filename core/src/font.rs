@@ -321,6 +321,10 @@ struct FontData {
 }
 
 impl<'gc> Font<'gc> {
+    pub(crate) fn library_evidence(self) -> Gc<'gc, ()> {
+        Gc::erase(self.0)
+    }
+
     pub fn from_font_file(
         gc_context: &Mutation<'gc>,
         descriptor: FontDescriptor,

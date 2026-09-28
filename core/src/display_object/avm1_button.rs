@@ -110,6 +110,10 @@ impl<'gc> Avm1Button<'gc> {
         ))
     }
 
+    pub(crate) fn library_evidence(self) -> [Gc<'gc, ()>; 2] {
+        [Gc::erase(self.0), Gc::erase(self.0.shared)]
+    }
+
     pub fn instantiate(self, mc: &Mutation<'gc>) -> Self {
         Self(Gc::new(mc, (*self.0).clone()))
     }

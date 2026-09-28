@@ -242,6 +242,10 @@ impl<'gc> ClassData<'gc> {
 }
 
 impl<'gc> Class<'gc> {
+    pub fn as_gc(self) -> Gc<'gc, ()> {
+        Gc::erase(self.0)
+    }
+
     pub fn as_ptr(self) -> *const () {
         Gc::as_ptr(self.0).cast()
     }

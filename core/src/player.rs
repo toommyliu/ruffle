@@ -61,6 +61,7 @@ use crate::vminterface::Instantiator;
 use async_channel::Sender;
 use enumset::EnumSet;
 use fnv::FnvHashSet;
+use gc_arena::arena::CollectionPhase;
 use gc_arena::lock::GcRefLock;
 use gc_arena::{Collect, DynamicRootSet, Mutation, Rootable};
 use ruffle_common::duration::FloatDuration;
@@ -300,6 +301,38 @@ impl<'gc> GcRootData<'gc> {
 }
 
 type GcArena = gc_arena::Arena<Rootable![GcRoot<'_>]>;
+
+/// Nothing else may drive the arena: every sweep has to be preceded by the
+/// finalization here, which alone keeps alive what the movie libraries hold.
+fn collect_garbage(arena: &mut GcArena, full: bool) {
+    loop {
+        if arena.collection_phase() == CollectionPhase::Sweeping {
+            if full {
+                arena.finish_cycle();
+            } else {
+                arena.cycle_debt();
+            }
+            return;
+        }
+        let marked = if full {
+            arena.finish_marking()
+        } else {
+            arena.mark_debt()
+        };
+        let Some(marked) = marked else {
+            return;
+        };
+        let settled = marked.finalize(|fc, root| {
+            // Finalizing only ever drops pointers, so it needs no write
+            // barrier (which would send the arena back to marking).
+            let data = unsafe { root.data.as_ref_cell() };
+            data.borrow_mut().library.finalize(fc)
+        });
+        if settled && let Some(marked) = arena.finish_marking() {
+            marked.start_sweeping();
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum RunState {
@@ -2453,13 +2486,13 @@ impl Player {
         self.update_mouse_state(EnumSet::empty(), false, &mut false);
 
         // GC
-        self.gc_arena.borrow_mut().collect_debt();
+        collect_garbage(&mut self.gc_arena.borrow_mut(), false);
 
         rval
     }
 
     pub fn collect_garbage(&mut self) {
-        self.gc_arena.borrow_mut().finish_cycle();
+        collect_garbage(&mut self.gc_arena.borrow_mut(), true);
     }
 
     pub fn flush_shared_objects(&mut self) {

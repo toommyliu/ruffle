@@ -31,6 +31,25 @@ pub enum Character<'gc> {
     BinaryData(Gc<'gc, BinaryData>),
 }
 
+impl<'gc> Character<'gc> {
+    pub fn library_evidence(self) -> [Option<Gc<'gc, ()>>; 2] {
+        match self {
+            Character::EditText(o) => o.library_evidence().map(Some),
+            Character::Graphic(o) => o.library_evidence().map(Some),
+            Character::MovieClip(o) => o.library_evidence().map(Some),
+            Character::Avm1Button(o) => o.library_evidence().map(Some),
+            Character::Avm2Button(o) => o.library_evidence().map(Some),
+            Character::MorphShape(o) => o.library_evidence().map(Some),
+            Character::Text(o) => o.library_evidence().map(Some),
+            Character::Video(o) => [Some(o.library_evidence()), None],
+            Character::Font(o) => [Some(o.library_evidence()), None],
+            Character::Bitmap(o) => [Some(Gc::erase(o)), None],
+            Character::BinaryData(o) => [Some(Gc::erase(o)), None],
+            Character::Sound(_) => [None, None],
+        }
+    }
+}
+
 #[derive(Collect, Debug)]
 #[collect(no_drop)]
 pub struct BitmapCharacter<'gc> {

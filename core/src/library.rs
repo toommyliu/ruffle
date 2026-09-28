@@ -9,7 +9,7 @@ use crate::prelude::*;
 use crate::string::AvmString;
 use crate::tag_utils::SwfMovie;
 use gc_arena::collect::Trace;
-use gc_arena::{Collect, Mutation};
+use gc_arena::{Collect, Finalization, Gc, GcWeak, Mutation};
 use ruffle_render::backend::RenderBackend;
 use ruffle_render::bitmap::BitmapHandle;
 use ruffle_render::utils::remove_invalid_jpeg_data;
@@ -52,12 +52,10 @@ pub struct Avm2ClassRegistry<'gc> {
     class_map: WeakValueHashMap<Avm2Class<'gc>, WeakMovieSymbol>,
 }
 
+// SAFETY: The classes aren't traced. `forget_dead_classes` drops the dead
+// ones before every sweep.
 unsafe impl<'gc> Collect<'gc> for Avm2ClassRegistry<'gc> {
-    fn trace<C: Trace<'gc>>(&self, cc: &mut C) {
-        for (k, _) in self.class_map.iter() {
-            cc.trace(k);
-        }
-    }
+    fn trace<C: Trace<'gc>>(&self, _cc: &mut C) {}
 }
 
 impl Default for Avm2ClassRegistry<'_> {
@@ -81,6 +79,28 @@ impl<'gc> Avm2ClassRegistry<'gc> {
         match self.class_map.get(&class_def) {
             Some(MovieSymbol(movie, symbol)) => Some((movie, symbol)),
             None => None,
+        }
+    }
+
+    fn movies_of_live_classes(&self, fc: &Finalization<'gc>) -> FnvHashSet<*const SwfMovie> {
+        self.class_map
+            .iter()
+            .filter(|(class, _)| !Gc::is_dead(fc, class.as_gc()))
+            .map(|(_, MovieSymbol(movie, _))| Arc::as_ptr(&movie))
+            .collect()
+    }
+
+    fn forget_dead_classes(&mut self, fc: &Finalization<'gc>) {
+        // Not `retain`: weak_table's skips the entry after each one it
+        // removes, and a class left here would be read once it's freed.
+        let dead: Vec<_> = self
+            .class_map
+            .keys()
+            .filter(|class| Gc::is_dead(fc, class.as_gc()))
+            .copied()
+            .collect();
+        for class in dead {
+            self.class_map.remove(&class);
         }
     }
 
@@ -127,10 +147,14 @@ pub struct MovieLibrary<'gc> {
     jpeg_tables: Option<Vec<u8>>,
     fonts: FontMap<'gc>,
     avm2_domain: Option<Avm2Domain<'gc>>,
+
+    evidence: Vec<GcWeak<'gc, ()>>,
+
+    created_cycle: u64,
 }
 
 impl<'gc> MovieLibrary<'gc> {
-    pub fn new(swf: Arc<SwfMovie>) -> Self {
+    pub fn new(swf: Arc<SwfMovie>, created_cycle: u64) -> Self {
         Self {
             swf,
             characters: HashMap::new(),
@@ -139,7 +163,41 @@ impl<'gc> MovieLibrary<'gc> {
             jpeg_tables: None,
             fonts: Default::default(),
             avm2_domain: None,
+            evidence: Vec::new(),
+            created_cycle,
         }
+    }
+
+    pub fn add_evidence(&mut self, object: Gc<'gc, ()>) {
+        let object = Gc::downgrade(object);
+        if !self.evidence.iter().any(|e| GcWeak::ptr_eq(*e, object)) {
+            self.evidence.push(object);
+        }
+    }
+
+    fn resurrect(&self, fc: &Finalization<'gc>) -> bool {
+        struct Resurrect<'a, 'gc> {
+            fc: &'a Finalization<'gc>,
+            any_dead: bool,
+        }
+
+        impl<'gc> Trace<'gc> for Resurrect<'_, 'gc> {
+            fn trace_gc(&mut self, gc: Gc<'gc, ()>) {
+                if Gc::is_dead(self.fc, gc) {
+                    Gc::resurrect(self.fc, gc);
+                    self.any_dead = true;
+                }
+            }
+
+            fn trace_gc_weak(&mut self, _gc: GcWeak<'gc, ()>) {}
+        }
+
+        let mut resurrect = Resurrect {
+            fc,
+            any_dead: false,
+        };
+        self.trace(&mut resurrect);
+        resurrect.any_dead
     }
 
     /// Registers a character; returns `true` if successful, or `false` if a character with
@@ -152,6 +210,9 @@ impl<'gc> MovieLibrary<'gc> {
                     self.fonts.register(font);
                 }
                 e.insert(character);
+                for object in character.library_evidence().into_iter().flatten() {
+                    self.evidence.push(Gc::downgrade(object));
+                }
                 true
             }
             Entry::Occupied(_) => {
@@ -402,11 +463,16 @@ impl ruffle_render::bitmap::BitmapSource for MovieLibrarySource<'_, '_> {
 
 struct MovieLibraries<'gc>(PtrWeakKeyHashMap<Weak<SwfMovie>, MovieLibrary<'gc>>);
 
+// SAFETY: Only the evidence is traced, weakly. Before every sweep, `Library`
+// resurrects what the libraries of movies still in use hold and drops the
+// rest.
 unsafe impl<'gc> Collect<'gc> for MovieLibraries<'gc> {
     #[inline]
     fn trace<C: Trace<'gc>>(&self, cc: &mut C) {
-        for (_, val) in self.0.iter() {
-            cc.trace(val);
+        for (_, library) in self.0.iter() {
+            for &object in &library.evidence {
+                cc.trace_gc_weak(object);
+            }
         }
     }
 }
@@ -420,10 +486,10 @@ impl<'gc> MovieLibraries<'gc> {
         self.0.get(key)
     }
 
-    fn get_or_insert_mut(&mut self, movie: Arc<SwfMovie>) -> &mut MovieLibrary<'gc> {
+    fn get_or_insert_mut(&mut self, movie: Arc<SwfMovie>, cycle: u64) -> &mut MovieLibrary<'gc> {
         self.0
             .entry(movie.clone())
-            .or_insert_with(|| MovieLibrary::new(movie))
+            .or_insert_with(|| MovieLibrary::new(movie, cycle))
     }
 
     fn known_movies(&self) -> impl Iterator<Item = Arc<SwfMovie>> {
@@ -462,6 +528,8 @@ pub struct Library<'gc> {
     /// A list of the symbols associated with specific AVM2 constructor
     /// prototypes.
     avm2_class_registry: Avm2ClassRegistry<'gc>,
+
+    gc_cycles: u64,
 }
 
 impl<'gc> Library<'gc> {
@@ -475,7 +543,53 @@ impl<'gc> Library<'gc> {
             default_font_names: Default::default(),
             default_font_cache: Default::default(),
             avm2_class_registry: Default::default(),
+            gc_cycles: 0,
         }
+    }
+
+    pub fn finalize(&mut self, fc: &Finalization<'gc>) -> bool {
+        let class_movies = self.avm2_class_registry.movies_of_live_classes(fc);
+        let mut resurrected = false;
+        for (movie, library) in self.movie_libraries.0.iter() {
+            if self.in_use(fc, &movie, library, &class_movies) {
+                resurrected |= library.resurrect(fc);
+            }
+        }
+        if resurrected {
+            return false;
+        }
+
+        // Not `retain`: weak_table's skips the entry after each one it
+        // removes, and a library left here would keep characters that are
+        // about to be freed.
+        let unused: Vec<_> = self
+            .movie_libraries
+            .0
+            .iter()
+            .filter(|(movie, library)| !self.in_use(fc, movie, library, &class_movies))
+            .map(|(movie, _)| movie)
+            .collect();
+        for movie in unused {
+            self.movie_libraries.0.remove(&movie);
+        }
+        for (_, library) in self.movie_libraries.0.iter_mut() {
+            library.evidence.retain(|e| !e.is_dropped());
+        }
+        self.avm2_class_registry.forget_dead_classes(fc);
+        self.gc_cycles += 1;
+        true
+    }
+
+    fn in_use(
+        &self,
+        fc: &Finalization<'gc>,
+        movie: &Arc<SwfMovie>,
+        library: &MovieLibrary<'gc>,
+        class_movies: &FnvHashSet<*const SwfMovie>,
+    ) -> bool {
+        library.created_cycle + 2 > self.gc_cycles
+            || library.evidence.iter().any(|e| !e.is_dead(fc))
+            || class_movies.contains(&Arc::as_ptr(movie))
     }
 
     pub fn library_for_movie(&self, movie: Arc<SwfMovie>) -> Option<&MovieLibrary<'gc>> {
@@ -483,7 +597,8 @@ impl<'gc> Library<'gc> {
     }
 
     pub fn library_for_movie_mut(&mut self, movie: Arc<SwfMovie>) -> &mut MovieLibrary<'gc> {
-        self.movie_libraries.get_or_insert_mut(movie)
+        self.movie_libraries
+            .get_or_insert_mut(movie, self.gc_cycles)
     }
 
     pub fn known_movies(&self) -> impl Iterator<Item = Arc<SwfMovie>> {

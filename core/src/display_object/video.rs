@@ -183,6 +183,10 @@ impl<'gc> Video<'gc> {
         ))
     }
 
+    pub(crate) fn library_evidence(self) -> Gc<'gc, ()> {
+        Gc::erase(self.0)
+    }
+
     pub fn instantiate(self, mc: &Mutation<'gc>) -> Self {
         Self(Gc::new(mc, (*self.0).clone()))
     }

@@ -362,6 +362,10 @@ impl<'gc> MovieClip<'gc> {
         mc
     }
 
+    pub(crate) fn library_evidence(self) -> [Gc<'gc, ()>; 2] {
+        [Gc::erase(self.0), Gc::erase(self.0.shared.get())]
+    }
+
     pub fn instantiate(self, mc: &Mutation<'gc>) -> Self {
         Self(Gc::new(mc, (*self.0).clone()))
     }
@@ -491,6 +495,11 @@ impl<'gc> MovieClip<'gc> {
     ) -> bool {
         let shared = Gc::as_ref(self.0.shared.get());
         let (swf, progress) = (&shared.swf, &shared.preload_progress);
+
+        let movie_library = context.library.library_for_movie_mut(swf.movie.clone());
+        for object in self.library_evidence() {
+            movie_library.add_evidence(object);
+        }
 
         if progress.awaiting_import.get() {
             // No matter how much of this movie we have loaded, we must not continue preloading
