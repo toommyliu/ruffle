@@ -531,6 +531,10 @@ impl AudioMixer {
         Ok(self.sounds.insert(sound))
     }
 
+    pub fn unregister_sound(&mut self, sound: SoundHandle) {
+        self.sounds.remove(sound);
+    }
+
     /// Registers an external MP3 with the audio mixer.
     #[cfg(feature = "mp3")]
     pub fn register_mp3(&mut self, data: &[u8]) -> Result<SoundHandle, DecodeError> {
@@ -583,7 +587,10 @@ impl AudioMixer {
         sound_handle: SoundHandle,
         settings: &swf::SoundInfo,
     ) -> Result<SoundInstanceHandle, DecodeError> {
-        let sound = &self.sounds[sound_handle];
+        let sound = self
+            .sounds
+            .get(sound_handle)
+            .ok_or(decoders::Error::UnregisteredSound)?;
         let data = Cursor::new(ArcAsRef(Arc::clone(&sound.data)));
         // Create a stream that decodes and resamples the sound.
         let stream = if sound.skip_sample_frames == 0
@@ -1081,6 +1088,11 @@ macro_rules! impl_audio_mixer_backend {
         #[inline]
         fn register_mp3(&mut self, data: &[u8]) -> Result<SoundHandle, DecodeError> {
             self.$mixer.register_mp3(data)
+        }
+
+        #[inline]
+        fn unregister_sound(&mut self, sound: SoundHandle) {
+            self.$mixer.unregister_sound(sound)
         }
 
         #[inline]

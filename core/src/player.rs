@@ -2505,12 +2505,24 @@ impl Player {
 
         // GC
         collect_garbage(&mut self.gc_arena.borrow_mut(), false);
+        self.unregister_freed_sounds();
 
         rval
     }
 
     pub fn collect_garbage(&mut self) {
         collect_garbage(&mut self.gc_arena.borrow_mut(), true);
+        self.unregister_freed_sounds();
+    }
+
+    fn unregister_freed_sounds(&mut self) {
+        let sounds = self
+            .gc_arena
+            .borrow()
+            .mutate(|_, root| root.data.borrow().library.take_freed_sounds());
+        for sound in sounds {
+            self.audio.unregister_sound(sound);
+        }
     }
 
     pub fn flush_shared_objects(&mut self) {

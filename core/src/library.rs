@@ -18,6 +18,7 @@ use ruffle_wstr::{WStr, WString};
 use crate::backend::ui::{FontDefinition, UiBackend};
 use crate::font::DefaultFont;
 use fnv::{FnvHashMap, FnvHashSet};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use weak_table::{PtrWeakKeyHashMap, WeakValueHashMap, traits::WeakElement};
@@ -509,6 +510,9 @@ pub struct Library<'gc> {
     avm2_class_registry: Avm2ClassRegistry<'gc>,
 
     gc_cycles: u64,
+
+    #[collect(require_static)]
+    freed_sounds: RefCell<Vec<SoundHandle>>,
 }
 
 impl<'gc> Library<'gc> {
@@ -523,6 +527,7 @@ impl<'gc> Library<'gc> {
             default_font_cache: Default::default(),
             avm2_class_registry: Default::default(),
             gc_cycles: 0,
+            freed_sounds: Default::default(),
         }
     }
 
@@ -550,13 +555,24 @@ impl<'gc> Library<'gc> {
             .map(|(movie, _)| movie)
             .collect();
         for movie in unused {
-            self.movie_libraries.0.remove(&movie);
+            if let Some(library) = self.movie_libraries.0.remove(&movie) {
+                self.freed_sounds
+                    .get_mut()
+                    .extend(library.characters.values().filter_map(|c| match c {
+                        Character::Sound(sound) => Some(*sound),
+                        _ => None,
+                    }));
+            }
         }
         for (_, library) in self.movie_libraries.0.iter_mut() {
             library.evidence.retain(|e| !e.is_dropped());
         }
         self.avm2_class_registry.forget_dead_classes(fc);
         self.gc_cycles += 1;
+    }
+
+    pub fn take_freed_sounds(&self) -> Vec<SoundHandle> {
+        self.freed_sounds.take()
     }
 
     fn in_use(
