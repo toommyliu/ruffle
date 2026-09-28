@@ -1,6 +1,9 @@
 //! With the `stats` feature, calls the page's
 //! `globalThis.__ruffleOnFrame(tickMs, renderMs, counters, renderer,
-//! framesRun, wasmMemoryBytes, gpuMemory)`, if any, after every tick.
+//! framesRun, wasmMemoryBytes, gpuMemory, heapBytes, gcMs)`, if any, after
+//! every tick. Setting `globalThis.__ruffleCollectGarbage = true` runs a full
+//! garbage collection after the next tick and resets it; `gcMs` is its
+//! duration, or -1.
 //! `renderMs` is -1 if nothing rendered. `counters` (from
 //! `ruffle_render_wgpu::stats`) and `gpuMemory` are undefined without a wgpu
 //! renderer. Without the feature, [`Timings`] does nothing.
@@ -13,6 +16,52 @@ use wasm_bindgen::{JsCast, JsValue};
 thread_local! {
     static PERFORMANCE: Option<web_sys::Performance> =
         web_sys::window().and_then(|window| window.performance());
+}
+
+#[cfg(feature = "stats")]
+mod heap {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+    struct Counting;
+
+    // SAFETY: forwards to `System`, only counting.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+            }
+            ptr
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) };
+            LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let new = unsafe { System.realloc(ptr, layout, new_size) };
+            if !new.is_null() {
+                LIVE_BYTES.fetch_add(new_size, Ordering::Relaxed);
+                LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+            }
+            new
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
 }
 
 #[cfg(feature = "stats")]
@@ -63,21 +112,44 @@ impl Timings {
     }
 
     #[inline]
-    pub fn report(&self, player: &Player) {
+    pub fn report(&self, player: &mut Player) {
         #[cfg(feature = "stats")]
-        report(
-            self.tick_ms,
-            self.render_ms,
-            player.renderer().name(),
-            player.frames_run(),
-        );
+        {
+            let gc_ms = collect_garbage_if_asked(player);
+            report(
+                self.tick_ms,
+                self.render_ms,
+                player.renderer().name(),
+                player.frames_run(),
+                gc_ms,
+            );
+        }
         #[cfg(not(feature = "stats"))]
         let _ = player;
     }
 }
 
 #[cfg(feature = "stats")]
-fn report(tick_ms: f64, render_ms: Option<f64>, renderer: &str, frames_run: u64) {
+fn collect_garbage_if_asked(player: &mut Player) -> Option<f64> {
+    let key = JsValue::from_str("__ruffleCollectGarbage");
+    let global = js_sys::global();
+    if js_sys::Reflect::get(&global, &key).ok()?.as_bool() != Some(true) {
+        return None;
+    }
+    let _ = js_sys::Reflect::set(&global, &key, &JsValue::FALSE);
+    let started = now();
+    player.collect_garbage();
+    Some(now() - started)
+}
+
+#[cfg(feature = "stats")]
+fn report(
+    tick_ms: f64,
+    render_ms: Option<f64>,
+    renderer: &str,
+    frames_run: u64,
+    gc_ms: Option<f64>,
+) {
     let Ok(hook) = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__ruffleOnFrame"))
     else {
         return;
@@ -94,6 +166,10 @@ fn report(tick_ms: f64, render_ms: Option<f64>, renderer: &str, frames_run: u64)
     );
     args.push(&wasm_memory_bytes());
     args.push(&gpu_memory());
+    args.push(&JsValue::from_f64(
+        heap::LIVE_BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64,
+    ));
+    args.push(&JsValue::from_f64(gc_ms.unwrap_or(-1.0)));
     let _ = hook.apply(&JsValue::NULL, &args);
 }
 
