@@ -95,6 +95,7 @@ impl BufferArena {
                 usage: self.usage,
                 mapped_at_creation: false,
             });
+            crate::stats::add(&crate::stats::MESH_BUFFER_BYTES, chunk_size as i64);
             let mut free = BTreeMap::new();
             if chunk_size > size {
                 free.insert(size, chunk_size - size);
@@ -184,6 +185,10 @@ impl BufferArena {
             };
             chunk.allocations -= 1;
             if chunk.allocations == 0 {
+                crate::stats::add(
+                    &crate::stats::MESH_BUFFER_BYTES,
+                    -(chunk.buffer.size() as i64),
+                );
                 state.chunks[index] = None;
                 continue;
             }

@@ -488,6 +488,7 @@ pub(super) fn run_pixelbender_shader_impl(
                             clamped_linear: Default::default(),
                             clamped_nearest: Default::default(),
                             copy_count: Cell::new(0),
+                            _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                         }))
                     });
                     *texture = Some(cached_fresh_handle.clone().into());
@@ -645,7 +646,7 @@ pub(super) fn run_pixelbender_shader_impl(
 
     let pipeline = compiled_shader.get_pipeline(descriptors, sample_count, target.format());
 
-    crate::backend::count_render_pass();
+    crate::backend::count_render_pass(crate::stats::PassKind::Shader);
     let mut render_pass = render_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("PixelBender render pass"),
         color_attachments: &[color_attachment],

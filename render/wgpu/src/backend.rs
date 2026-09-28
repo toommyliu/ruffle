@@ -332,6 +332,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         bitmap_source: &dyn BitmapSource,
         scale: f32,
     ) -> Mesh {
+        crate::stats::count(&crate::stats::MESHES_CREATED);
         let shape_id = shape.id;
         let flat = shape.flat;
         let lyon_mesh =
@@ -416,6 +417,8 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             index_buffer: indices.buffer().clone(),
             index_format,
             _allocations: [Some(vertices), Some(indices), uniforms],
+            #[cfg(feature = "stats")]
+            _gradients: gradients,
             flat,
             bounds,
         }
@@ -627,6 +630,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         };
 
         for entry in cache_entries {
+            crate::stats::count(&crate::stats::CACHE_DRAWS);
             let texture = as_texture(&entry.handle);
             let surface = Surface::new(
                 &self.descriptors,
@@ -739,6 +743,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             .end_frame(OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES);
         self.texture_pool.end_frame(TEXTURE_MAX_IDLE_FRAMES);
         self.mesh_buffers.end_frame();
+        crate::stats::set_with(&crate::stats::POOL_BYTES, || {
+            self.texture_pool.idle_bytes() as i64
+        });
+        crate::stats::set_with(&crate::stats::OFFSCREEN_POOL_BYTES, || {
+            self.offscreen_texture_pool.idle_bytes() as i64
+        });
         self.profiler
             .end_frame()
             .expect("Frame should end successfully");
@@ -748,6 +758,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
     #[instrument(level = "debug", skip_all)]
     fn register_bitmap(&mut self, bitmap: Bitmap<'_>) -> Result<BitmapHandle, BitmapError> {
+        crate::stats::count(&crate::stats::TEXTURE_UPLOADS);
         let mut bitmap = bitmap.to_rgba();
 
         self.clamp_bitmap(&mut bitmap);
@@ -792,6 +803,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             extent,
         );
 
+        let bytes = u64::from(extent.width) * u64::from(extent.height) * 4;
         let handle = BitmapHandle(Arc::new(Texture {
             texture,
             repeating_linear: Default::default(),
@@ -799,6 +811,11 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             clamped_linear: Default::default(),
             clamped_nearest: Default::default(),
             copy_count: Cell::new(0),
+            _live: crate::stats::Live::with_bytes(
+                &crate::stats::LIVE_BITMAP_TEXTURES,
+                &crate::stats::LIVE_BITMAP_BYTES,
+                bytes,
+            ),
         }));
 
         Ok(handle)
@@ -811,6 +828,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         bitmap: Bitmap<'_>,
         mut region: PixelRegion,
     ) -> Result<(), BitmapError> {
+        crate::stats::count(&crate::stats::TEXTURE_UPLOADS);
         if region.width() == 0 || region.height() == 0 {
             // Nothing to do. It's important to bail out now, as the
             // write_texture call panics when the source buffer is of zero size.
@@ -865,6 +883,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         quality: StageQuality,
         bounds: PixelRegion,
     ) -> Option<Box<dyn SyncHandle>> {
+        crate::stats::count(&crate::stats::OFFSCREEN_DRAWS);
         let texture = as_texture(&handle);
 
         let extent = wgpu::Extent3d {
@@ -1078,6 +1097,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     clamped_linear: Default::default(),
                     clamped_nearest: Default::default(),
                     copy_count: Cell::new(0),
+                    _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                 }))
             }
         };
@@ -1199,6 +1219,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         width: NonZeroU32,
         height: NonZeroU32,
     ) -> Result<BitmapHandle, BitmapError> {
+        crate::stats::count(&crate::stats::EMPTY_TEXTURES_CREATED);
         let width = width.get();
         let height = height.get();
 
@@ -1231,6 +1252,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     | wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::COPY_SRC,
             });
+        let bytes = u64::from(extent.width) * u64::from(extent.height) * 4;
         Ok(BitmapHandle(Arc::new(Texture {
             texture,
             repeating_linear: Default::default(),
@@ -1238,6 +1260,11 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             clamped_linear: Default::default(),
             clamped_nearest: Default::default(),
             copy_count: Cell::new(0),
+            _live: crate::stats::Live::with_bytes(
+                &crate::stats::LIVE_BITMAP_TEXTURES,
+                &crate::stats::LIVE_EMPTY_TEXTURE_BYTES,
+                bytes,
+            ),
         })))
     }
 
@@ -1356,12 +1383,14 @@ const TEXTURE_MAX_IDLE_FRAMES: u64 = 600;
 
 static PASSES_SINCE_SUBMIT: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn count_render_pass() {
+pub(crate) fn count_render_pass(kind: crate::stats::PassKind) {
     PASSES_SINCE_SUBMIT.fetch_add(1, Ordering::Relaxed);
+    crate::stats::count_pass(kind);
 }
 
 fn note_submit() {
     PASSES_SINCE_SUBMIT.store(0, Ordering::Relaxed);
+    crate::stats::count(&crate::stats::SUBMITS);
 }
 
 fn passes_since_submit() -> u64 {

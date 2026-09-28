@@ -926,6 +926,9 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
     ) {
         self.batch
             .add(width, height, regions, reads_below, copy, item);
+        if crate::stats::sequential_draws() {
+            self.flush_batch();
+        }
     }
 
     fn finish_masked_block(&mut self) {
@@ -1253,6 +1256,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             let Some(region) = self.parent_copy_region(&commands.commands[0]) else {
                 return false;
             };
+            crate::stats::count(&crate::stats::BLEND_LAYERS_DIRECT);
             if region.is_empty() {
                 return true;
             }
@@ -1260,6 +1264,8 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                 block.items.push(MaskedItem::Copy(region));
                 block.reads_below = true;
             }
+        } else {
+            crate::stats::count(&crate::stats::BLEND_LAYERS_DIRECT);
         }
         match commands.commands.pop() {
             Some(Command::RenderShape { shape, transform }) => {
@@ -1320,6 +1326,12 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
 
 impl CommandHandler for WgpuCommandHandler<'_, '_> {
     fn blend(&mut self, mut commands: CommandList, blend_mode: RenderBlendMode) {
+        crate::stats::count(
+            &crate::stats::BLEND_LAYERS[match &blend_mode {
+                RenderBlendMode::Builtin(mode) => *mode as usize,
+                RenderBlendMode::Shader(_) => 15,
+            }],
+        );
         if self.try_blend_directly(&mut commands, &blend_mode) {
             return;
         }

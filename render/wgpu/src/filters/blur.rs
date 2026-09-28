@@ -502,7 +502,7 @@ impl BlurFilter {
                 ],
             });
 
-        crate::backend::count_render_pass();
+        crate::backend::count_render_pass(crate::stats::PassKind::Filter);
         let mut render_pass = draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: create_debug_label!("Single pass blur filter").as_deref(),
             color_attachments: &[target.color_attachments()],
@@ -552,7 +552,7 @@ impl BlurFilter {
                 ],
             });
 
-        crate::backend::count_render_pass();
+        crate::backend::count_render_pass(crate::stats::PassKind::Filter);
         let mut render_pass = draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: create_debug_label!("Blur filter").as_deref(),
             color_attachments: &[destination.color_attachments()],

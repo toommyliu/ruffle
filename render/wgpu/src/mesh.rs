@@ -22,6 +22,8 @@ pub struct Mesh {
     pub index_buffer: wgpu::Buffer,
     pub index_format: wgpu::IndexFormat,
     pub _allocations: [Option<ArenaAllocation>; 3],
+    #[cfg(feature = "stats")]
+    pub _gradients: Vec<CommonGradient>,
     pub flat: bool,
     pub bounds: swf::Rectangle<swf::Twips>,
 }
@@ -262,6 +264,7 @@ pub enum DrawType {
 pub struct CommonGradient {
     texture_view: wgpu::TextureView,
     buffer_offset: wgpu::BufferAddress,
+    _live: crate::stats::Live,
 }
 
 impl CommonGradient {
@@ -360,6 +363,7 @@ impl CommonGradient {
         Self {
             texture_view: view,
             buffer_offset,
+            _live: crate::stats::Live::new(&crate::stats::LIVE_GRADIENT_TEXTURES),
         }
     }
 }

@@ -256,7 +256,7 @@ impl DisplacementMapFilter {
                     },
                 ],
             });
-        crate::backend::count_render_pass();
+        crate::backend::count_render_pass(crate::stats::PassKind::Filter);
         let mut render_pass = draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: create_debug_label!("Displacement map filter").as_deref(),
             color_attachments: &[target.color_attachments()],

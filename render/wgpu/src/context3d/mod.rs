@@ -117,6 +117,7 @@ impl WgpuContext3D {
                 clamped_nearest: Default::default(),
                 texture: dummy_texture,
                 copy_count: Cell::new(0),
+                _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
             }))
         };
 
@@ -242,7 +243,7 @@ impl WgpuContext3D {
             None
         };
 
-        crate::backend::count_render_pass();
+        crate::backend::count_render_pass(crate::stats::PassKind::Stage3d);
         let mut pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Context3D render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -653,6 +654,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                     self.front_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
                         texture: front_buffer_resolve_texture.unwrap(),
@@ -661,6 +663,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                 } else {
                     // In non-multisample mode, we don't have a separate resolve buffer,
@@ -673,6 +676,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                     self.front_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
                         texture: front_buffer_texture,
@@ -681,6 +685,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                     self.current_texture_resolve_view = None;
                 }

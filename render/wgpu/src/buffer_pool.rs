@@ -47,6 +47,7 @@ impl TexturePool {
                 None
             };
             BufferPool::new(Box::new(move |descriptors, _description| {
+                crate::stats::count(&crate::stats::POOL_TEXTURES_CREATED);
                 let texture = descriptors.device.create_texture(&wgpu::TextureDescriptor {
                     label: label.as_deref(),
                     size,
@@ -86,6 +87,20 @@ impl TexturePool {
                 ))
             })
             .clone()
+    }
+
+    pub fn idle_bytes(&self) -> u64 {
+        self.pools
+            .iter()
+            .map(|(key, pool)| {
+                let texel = key.format.block_copy_size(None).unwrap_or(4);
+                let bytes = u64::from(key.size.width)
+                    * u64::from(key.size.height)
+                    * u64::from(texel)
+                    * u64::from(key.sample_count);
+                bytes * pool.len() as u64
+            })
+            .sum()
     }
 
     pub fn end_frame(&mut self, max_idle_frames: u64) {
@@ -154,6 +169,13 @@ impl<Type, Description: BufferDescription> BufferPool<Type, Description> {
             available: Arc::new(Mutex::new(vec![])),
             constructor,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.available
+            .lock()
+            .expect("Should not be able to lock recursively")
+            .len()
     }
 
     pub fn take(

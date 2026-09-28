@@ -49,6 +49,7 @@ mod layouts;
 mod mesh;
 mod mesh_arena;
 mod shaders;
+pub mod stats;
 mod surface;
 
 impl BitmapHandleImpl for Texture {}
@@ -276,6 +277,7 @@ pub struct Texture {
     clamped_linear: OnceCell<BitmapBinds>,
     clamped_nearest: OnceCell<BitmapBinds>,
     copy_count: Cell<u8>,
+    _live: crate::stats::Live,
 }
 
 impl Texture {
