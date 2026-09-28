@@ -286,6 +286,7 @@ impl<'gc> LoaderInfoObject<'gc> {
         self.set_loader_stream(loader_stream, context.gc());
         self.set_errored(false);
         self.reset_init_and_complete_events();
+        context.load_manager.remove_finished_loads_into(self);
 
         // Remove the Loader's content element if it exists.
         if let Some(child) = content {

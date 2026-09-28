@@ -249,6 +249,18 @@ impl<'gc> LoadManager<'gc> {
         self.0.remove(handle);
     }
 
+    /// An unloaded `LoaderInfo` never fires `complete`, which is what these
+    /// loads wait for.
+    pub fn remove_finished_loads_into(&mut self, loader_info: LoaderInfoObject<'gc>) {
+        self.0.retain(|_, loader| {
+            !matches!(
+                (loader.loader_status, loader.vm_data),
+                (LoaderStatus::Succeeded, MovieLoaderVMData::Avm2 { loader_info: target, .. })
+                    if target.as_ptr() == loader_info.as_ptr()
+            )
+        });
+    }
+
     /// Retrieve a loader by handle.
     pub fn get_loader(&self, handle: LoaderHandle) -> Option<&MovieLoader<'gc>> {
         self.0.get(handle)
