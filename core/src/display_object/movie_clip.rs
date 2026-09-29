@@ -407,6 +407,7 @@ impl<'gc> MovieClip<'gc> {
         write.flags.set(MovieClipFlags::PLAYING);
         write.current_frame.set(0);
         write.audio_stream.take();
+        self.mark_enter_frame_work();
     }
 
     pub fn set_initialized(self) {
@@ -863,7 +864,8 @@ impl<'gc> MovieClip<'gc> {
     }
 
     pub fn play(self) {
-        self.0.play()
+        self.0.play();
+        self.mark_enter_frame_work();
     }
 
     pub fn prev_frame(self, context: &mut UpdateContext<'gc>) {
@@ -1834,6 +1836,7 @@ impl<'gc> MovieClip<'gc> {
                     .or_insert_with(|| QueuedTagList::None);
 
                 bucket.queue_add(new_tag);
+                self.mark_enter_frame_work();
 
                 return;
             }
@@ -2582,11 +2585,14 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
                 // FIXME - does this propagate through non-movie-clip children (Loader/Button)?
                 child.base().set_skip_next_enter_frame(true);
             }
-            child.enter_frame(context);
+            if child.needs_enter_frame() {
+                child.enter_frame(context);
+            }
         }
 
         if skip_frame {
             self.base().set_skip_next_enter_frame(false);
+            self.settle_enter_frame_work(true);
             return;
         }
 
@@ -2615,6 +2621,10 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
                 }
             }
         }
+
+        let has_own_work = self.movie().is_action_script_3()
+            && (self.playing() || !self.0.queued_tags.borrow().is_empty());
+        self.settle_enter_frame_work(has_own_work);
     }
 
     /// Construct objects placed on this frame.
@@ -4527,6 +4537,7 @@ impl<'gc, 'a> MovieClip<'gc> {
             .or_insert_with(|| QueuedTagList::None);
 
         bucket.queue_add(new_tag);
+        self.mark_enter_frame_work();
 
         Ok(())
     }
@@ -4609,6 +4620,7 @@ impl<'gc, 'a> MovieClip<'gc> {
             .or_insert_with(|| QueuedTagList::None);
 
         bucket.queue_remove(new_tag);
+        self.mark_enter_frame_work();
 
         Ok(())
     }

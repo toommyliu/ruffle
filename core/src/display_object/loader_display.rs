@@ -104,9 +104,12 @@ impl<'gc> TDisplayObject<'gc> for LoaderDisplay<'gc> {
             if skip_frame {
                 child.base().set_skip_next_enter_frame(true);
             }
-            child.enter_frame(context);
+            if child.needs_enter_frame() {
+                child.enter_frame(context);
+            }
         }
         self.base().set_skip_next_enter_frame(false);
+        self.settle_enter_frame_work(false);
     }
 
     fn construct_frame(self, context: &mut UpdateContext<'gc>) {

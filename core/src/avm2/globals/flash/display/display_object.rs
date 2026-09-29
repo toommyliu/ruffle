@@ -49,7 +49,7 @@ pub fn initialize_for_allocator<'gc>(
     // and consequently are observed to have their currentFrame lag one
     // frame behind objects placed by the timeline (even if they were
     // both placed in the same frame to begin with).
-    dobj.base().set_skip_next_enter_frame(true);
+    dobj.skip_next_enter_frame();
     dobj.on_construction_complete(context);
 
     obj

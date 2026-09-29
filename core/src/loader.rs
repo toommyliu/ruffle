@@ -2111,7 +2111,7 @@ impl<'gc> MovieLoader<'gc> {
             // and consequently are observed to have their currentFrame lag one
             // frame behind objects placed by the timeline (even if they were
             // both placed in the same frame to begin with).
-            mc.base().set_skip_next_enter_frame(true);
+            mc.skip_next_enter_frame();
 
             let flashvars = movie.as_ref().unwrap().parameters();
             if let Some(object) = mc.object1() {

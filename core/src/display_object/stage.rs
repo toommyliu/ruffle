@@ -854,7 +854,9 @@ impl<'gc> TDisplayObject<'gc> for Stage<'gc> {
 
     fn enter_frame(self, context: &mut UpdateContext<'gc>) {
         for child in self.iter_render_list() {
-            child.enter_frame(context);
+            if child.needs_enter_frame() {
+                child.enter_frame(context);
+            }
         }
 
         broadcast_frame_entered(context);

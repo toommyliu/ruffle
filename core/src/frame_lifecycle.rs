@@ -79,7 +79,9 @@ pub fn run_all_phases_avm2(context: &mut UpdateContext<'_>) {
 
     *context.frame_phase = FramePhase::Enter;
     OrphanManager::each_orphan_obj(context, |orphan, context| {
-        orphan.enter_frame(context);
+        if orphan.needs_enter_frame() {
+            orphan.enter_frame(context);
+        }
     });
     stage.enter_frame(context);
 
@@ -134,7 +136,7 @@ pub fn run_inner_goto_frame<'gc>(
     if initial_clip.swf_version() <= 9 && initial_clip.movie().is_action_script_3() {
         // We skip the next `enter_frame` call, so that we will still run the framescripts
         // queued for our target frame.
-        initial_clip.base().set_skip_next_enter_frame(true);
+        initial_clip.skip_next_enter_frame();
 
         return;
     }

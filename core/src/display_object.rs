@@ -407,7 +407,11 @@ impl Default for DisplayObjectBase<'_> {
             sound_transform: Default::default(),
             blend_mode: Default::default(),
             opaque_background: Default::default(),
-            flags: Cell::new(DisplayObjectFlags::VISIBLE.union(DisplayObjectFlags::FRAME_WORK)),
+            flags: Cell::new(
+                DisplayObjectFlags::VISIBLE
+                    .union(DisplayObjectFlags::FRAME_WORK)
+                    .union(DisplayObjectFlags::ENTER_FRAME_WORK),
+            ),
             scroll_rect: Cell::new(None),
             next_scroll_rect: Default::default(),
             scaling_grid: Default::default(),
@@ -2051,6 +2055,9 @@ pub trait TDisplayObject<'gc>:
         if parent.is_some() {
             self.base().set_flag(DisplayObjectFlags::FRAME_WORK, false);
             self.mark_frame_work();
+            self.base()
+                .set_flag(DisplayObjectFlags::ENTER_FRAME_WORK, false);
+            self.mark_enter_frame_work();
         }
         let parent_removed = had_parent && parent.is_none();
 
@@ -2466,7 +2473,10 @@ pub trait TDisplayObject<'gc>:
     /// Run any start-of-frame actions for this display object.
     ///
     /// When fired on `Stage`, this also emits the AVM2 `enterFrame` broadcast.
-    fn enter_frame(self, _context: &mut UpdateContext<'gc>) {}
+    fn enter_frame(self, _context: &mut UpdateContext<'gc>) {
+        self.base().set_skip_next_enter_frame(false);
+        self.settle_enter_frame_work(false);
+    }
 
     /// Construct all display objects that the timeline indicates should exist
     /// this frame, and their children.
@@ -2580,6 +2590,50 @@ pub trait TDisplayObject<'gc>:
                     child.settle_frame_work();
                 }
             }
+        }
+    }
+
+    #[no_dynamic]
+    fn needs_enter_frame(self) -> bool {
+        self.base()
+            .contains_flag(DisplayObjectFlags::ENTER_FRAME_WORK)
+            || self.base().should_skip_next_enter_frame()
+    }
+
+    #[no_dynamic]
+    fn mark_enter_frame_work(self) {
+        let mut node = Some(self);
+        while let Some(object) = node {
+            // An object with the flag has it on all of its ancestors too.
+            if object
+                .base()
+                .contains_flag(DisplayObjectFlags::ENTER_FRAME_WORK)
+            {
+                break;
+            }
+            object
+                .base()
+                .set_flag(DisplayObjectFlags::ENTER_FRAME_WORK, true);
+            node = object.parent();
+        }
+    }
+
+    #[no_dynamic]
+    fn skip_next_enter_frame(self) {
+        self.base().set_skip_next_enter_frame(true);
+        self.mark_enter_frame_work();
+    }
+
+    #[no_dynamic]
+    fn settle_enter_frame_work(self, has_own_work: bool) {
+        let idle = !has_own_work
+            && !self.base().should_skip_next_enter_frame()
+            && self
+                .as_container()
+                .is_none_or(|c| c.iter_render_list().all(|child| !child.needs_enter_frame()));
+        if idle {
+            self.base()
+                .set_flag(DisplayObjectFlags::ENTER_FRAME_WORK, false);
         }
     }
 
@@ -3219,6 +3273,10 @@ bitflags! {
         /// Something at or below this object may have frames to construct or
         /// scripts to run.
         const FRAME_WORK              = 1 << 17;
+
+        /// Something at or below this object may play, have queued timeline
+        /// tags or skip its next `enter_frame`.
+        const ENTER_FRAME_WORK        = 1 << 18;
     }
 }
 

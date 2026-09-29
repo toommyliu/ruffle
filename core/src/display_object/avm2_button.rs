@@ -442,9 +442,15 @@ impl<'gc> TDisplayObject<'gc> for Avm2Button<'gc> {
     }
 
     fn enter_frame(self, context: &mut UpdateContext<'gc>) {
+        let mut states_have_work = false;
         for state in self.all_state_children(false) {
-            state.enter_frame(context);
+            if state.needs_enter_frame() {
+                state.enter_frame(context);
+            }
+            states_have_work |= state.needs_enter_frame();
         }
+        self.base().set_skip_next_enter_frame(false);
+        self.settle_enter_frame_work(states_have_work);
     }
 
     fn construct_frame(self, context: &mut UpdateContext<'gc>) {
