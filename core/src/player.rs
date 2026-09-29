@@ -302,6 +302,8 @@ impl<'gc> GcRootData<'gc> {
 
 type GcArena = gc_arena::Arena<Rootable![GcRoot<'_>]>;
 
+const MIN_REQUESTED_GC_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Nothing else may drive the arena: every sweep has to be preceded by the
 /// finalization here, which alone keeps alive what the movie libraries and
 /// the values of weak dictionary keys hold.
@@ -343,6 +345,15 @@ fn collect_garbage(arena: &mut GcArena, full: bool) {
     }
 }
 
+/// A cycle already underway keeps what it marked before it became garbage,
+/// so that cycle is finished before a new one.
+fn collect_all_garbage(arena: &mut GcArena) {
+    if arena.collection_phase() != CollectionPhase::Sleeping {
+        collect_garbage(arena, true);
+    }
+    collect_garbage(arena, true);
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum RunState {
     Playing,
@@ -375,6 +386,8 @@ pub struct Player {
 
     run_state: RunState,
     needs_render: bool,
+    gc_requested: bool,
+    last_requested_gc: Option<Instant>,
 
     renderer: Box<dyn RenderBackend>,
     audio: Box<dyn AudioBackend>,
@@ -2368,6 +2381,7 @@ impl Player {
                 timers,
                 current_context_menu,
                 needs_render: &mut this.needs_render,
+                gc_requested: &mut this.gc_requested,
                 avm1,
                 avm2,
                 external_interface,
@@ -2458,7 +2472,16 @@ impl Player {
         self.update_mouse_state(EnumSet::empty(), false, &mut false);
 
         // GC
-        collect_garbage(&mut self.gc_arena.borrow_mut(), false);
+        if std::mem::take(&mut self.gc_requested)
+            && self
+                .last_requested_gc
+                .is_none_or(|at| at.elapsed() >= MIN_REQUESTED_GC_INTERVAL)
+        {
+            self.last_requested_gc = Some(Instant::now());
+            collect_all_garbage(&mut self.gc_arena.borrow_mut());
+        } else {
+            collect_garbage(&mut self.gc_arena.borrow_mut(), false);
+        }
         self.unregister_freed_sounds();
 
         rval
@@ -3149,6 +3172,8 @@ impl PlayerBuilder {
                     RunState::Suspended
                 },
                 needs_render: true,
+                gc_requested: false,
+                last_requested_gc: None,
                 self_reference: self_ref.clone(),
                 load_behavior: self.load_behavior,
                 spoofed_url: self.spoofed_url.clone(),

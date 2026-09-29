@@ -31,6 +31,15 @@ pub fn set_clipboard<'gc>(
     Ok(Value::Undefined)
 }
 
+pub fn gc<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    _this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    *activation.context.gc_requested = true;
+    Ok(Value::Undefined)
+}
+
 pub fn exit<'gc>(
     activation: &mut Activation<'_, 'gc>,
     _this: Value<'gc>,
