@@ -1,0 +1,4 @@
+40 plays at once: 32 channels, 8 null
+completed after 2 s: 32
+a play after they ended: a channel
+done

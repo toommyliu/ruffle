@@ -267,7 +267,8 @@ impl<'gc> SoundObject<'gc> {
     }
 }
 
-/// Returns `true` if the sound had a valid position, and `false` otherwise
+/// Returns `false` if the sound didn't start: its position is past its end, or
+/// every sound channel is in use (`Sound.play` then returns null, as in Flash).
 fn play_queued<'gc>(
     queued: QueuedPlay<'gc>,
     sound: SoundHandle,
@@ -284,18 +285,17 @@ fn play_queued<'gc>(
         return false;
     }
 
-    if let Some(instance) = context.start_sound(
+    let Some(instance) = context.start_sound(
         sound,
         &queued.sound_info,
         queued.sound_transform,
         None,
         None,
-    ) {
-        queued.sound_channel.set_sound_instance(context, instance);
-
-        context.attach_avm2_sound_channel(instance, queued.sound_channel);
-    }
-
+    ) else {
+        return false;
+    };
+    queued.sound_channel.set_sound_instance(context, instance);
+    context.attach_avm2_sound_channel(instance, queued.sound_channel);
     true
 }
 
