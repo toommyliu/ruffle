@@ -8,7 +8,7 @@ use crate::dynamic_transforms::DynamicTransforms;
 use crate::filters::FilterSource;
 use crate::mesh::Mesh;
 use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
-use crate::surface::commands::{Chunk, CommandRenderer, chunk_blends};
+use crate::surface::commands::{Chunk, CommandRenderer, DrawCommand, chunk_blends};
 use crate::utils::run_copy_pipeline;
 use crate::utils::supported_sample_count;
 use crate::{Descriptors, MaskState, Pipelines};
@@ -160,6 +160,14 @@ impl Surface {
                         draw_encoder,
                         &dynamic_transforms.vertex_buffer,
                     );
+                    let masks_after =
+                        chunk
+                            .iter()
+                            .fold(num_masks, |masks, command| match command {
+                                DrawCommand::PushMask => masks + 1,
+                                DrawCommand::PopMask => masks - 1,
+                                _ => masks,
+                            });
                     crate::backend::count_render_pass(crate::stats::PassKind::Draw);
                     let mut render_pass = draw_encoder.scoped_render_pass(
                         format!(
@@ -173,7 +181,12 @@ impl Surface {
                         wgpu::RenderPassDescriptor {
                             color_attachments: &[target.color_attachments()],
                             depth_stencil_attachment: if needs_stencil {
-                                target.stencil_attachment(descriptors, texture_pool)
+                                target.stencil_attachment(
+                                    descriptors,
+                                    texture_pool,
+                                    num_masks > 0,
+                                    masks_after > 0,
+                                )
                             } else {
                                 None
                             },
@@ -387,7 +400,12 @@ impl Surface {
                             .as_deref(),
                             color_attachments: &[target.color_attachments()],
                             depth_stencil_attachment: if needs_stencil {
-                                target.stencil_attachment(descriptors, texture_pool)
+                                target.stencil_attachment(
+                                    descriptors,
+                                    texture_pool,
+                                    num_masks > 0,
+                                    num_masks > 0,
+                                )
                             } else {
                                 None
                             },

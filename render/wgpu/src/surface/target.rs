@@ -365,10 +365,16 @@ impl CommandTarget {
         self.sample_count
     }
 
+    /// The stencil only holds masks, and popping a mask restores what pushing it
+    /// changed, so with no mask active it's all zeros: a pass only needs to load
+    /// it if masks are active when it starts (`masks_before`), and to store it if
+    /// they are when it ends (`masks_after`).
     pub fn stencil_attachment(
         &self,
         descriptors: &Descriptors,
         pool: &mut TexturePool,
+        masks_before: bool,
+        masks_after: bool,
     ) -> Option<wgpu::RenderPassDepthStencilAttachment<'_>> {
         let new_buffer = self.depth.get().is_none();
         let stencil = self
@@ -378,12 +384,16 @@ impl CommandTarget {
             view: stencil.view(),
             depth_ops: None,
             stencil_ops: Some(wgpu::Operations {
-                load: if new_buffer {
-                    wgpu::LoadOp::Clear(0)
-                } else {
+                load: if masks_before && !new_buffer {
                     wgpu::LoadOp::Load
+                } else {
+                    wgpu::LoadOp::Clear(0)
                 },
-                store: wgpu::StoreOp::Store,
+                store: if masks_after {
+                    wgpu::StoreOp::Store
+                } else {
+                    wgpu::StoreOp::Discard
+                },
             }),
         })
     }
