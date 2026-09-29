@@ -17,6 +17,7 @@ use gc_arena::lock::Lock;
 use gc_arena::{Collect, Gc, Mutation};
 use ruffle_common::utils::HasPrefixField;
 use ruffle_render::backend::ShapeHandle;
+use ruffle_render::backend::null::NullBitmapSource;
 use ruffle_render::commands::CommandHandler;
 use std::cell::{OnceCell, RefCell, RefMut};
 use std::sync::Arc;
@@ -53,16 +54,11 @@ impl<'gc> Graphic<'gc> {
         swf_shape: swf::Shape,
         movie: Arc<SwfMovie>,
     ) -> Self {
-        let library = context.library.library_for_movie(movie.clone()).unwrap();
         let shared = GraphicShared {
             id: swf_shape.id,
             shape_bounds: swf_shape.shape_bounds,
             edge_bounds: swf_shape.edge_bounds,
-            render_handle: Some(
-                context
-                    .renderer
-                    .register_shape((&swf_shape).into(), &MovieLibrarySource { library }),
-            ),
+            fallback_handle: OnceCell::new(),
             shape: swf_shape,
             movie,
             scaled_handle: RefCell::new(TessellationCache::new()),
@@ -86,7 +82,7 @@ impl<'gc> Graphic<'gc> {
             id: 0,
             shape_bounds: Default::default(),
             edge_bounds: Default::default(),
-            render_handle: None,
+            fallback_handle: OnceCell::new(),
             shape: swf::Shape {
                 version: 32,
                 id: 0,
@@ -139,7 +135,6 @@ impl<'gc> Graphic<'gc> {
     fn get_or_retessellate_handle(
         self,
         context: &mut RenderContext,
-        base_handle: &ShapeHandle,
         current_scale: f32,
     ) -> ShapeHandle {
         // Since graphics are created from a shared shape, we may be able to reuse a
@@ -176,7 +171,14 @@ impl<'gc> Graphic<'gc> {
 
             new_handle
         } else {
-            base_handle.clone()
+            shared
+                .fallback_handle
+                .get_or_init(|| {
+                    context
+                        .renderer
+                        .register_shape((&shared.shape).into(), &NullBitmapSource)
+                })
+                .clone()
         }
     }
 }
@@ -259,7 +261,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
 
         if let Some(drawing) = self.0.drawing.get() {
             drawing.borrow().render(context);
-        } else if let Some(base_handle) = self.0.shared.get().render_handle.clone() {
+        } else if !self.0.shared.get().shape.shape.is_empty() {
             let transform = context.transform_stack.transform();
 
             // Calculate the current scale from the transform, to determine if
@@ -269,7 +271,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
             let scale_y = f32::abs(matrix.b + matrix.d);
             let current_scale = ((scale_x * scale_x + scale_y * scale_y) / 2.0).sqrt();
 
-            let handle = self.get_or_retessellate_handle(context, &base_handle, current_scale);
+            let handle = self.get_or_retessellate_handle(context, current_scale);
 
             context.commands.render_shape(handle, transform)
         }
@@ -342,7 +344,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
 struct GraphicShared {
     id: CharacterId,
     shape: swf::Shape,
-    render_handle: Option<ShapeHandle>,
+    fallback_handle: OnceCell<ShapeHandle>,
     shape_bounds: Rectangle<Twips>,
     edge_bounds: Rectangle<Twips>,
     movie: Arc<SwfMovie>,
