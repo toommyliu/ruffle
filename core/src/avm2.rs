@@ -25,10 +25,11 @@ use crate::string::{AvmString, StringContext};
 use crate::tag_utils::SwfMovie;
 use crate::{PlayerMode, PlayerRuntime};
 
-use fnv::FnvHashMap;
+use fnv::{FnvBuildHasher, FnvHashMap, FnvHashSet};
 use gc_arena::lock::GcRefLock;
 use gc_arena::{Collect, Finalization, Gc, Mutation};
 use ruffle_wstr::WStr;
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use swf::DoAbc2Flag;
 use swf::avm2::read::Reader;
@@ -196,6 +197,9 @@ pub struct Avm2<'gc> {
     pub optimizer_enabled: bool,
 
     dispatching_uncaught_error: bool,
+
+    #[collect(require_static)]
+    logged_uncaught_errors: FnvHashSet<u64>,
 }
 
 impl<'gc> Avm2<'gc> {
@@ -249,6 +253,7 @@ impl<'gc> Avm2<'gc> {
             optimizer_enabled: true,
 
             dispatching_uncaught_error: false,
+            logged_uncaught_errors: Default::default(),
         }
     }
 
@@ -747,7 +752,11 @@ impl<'gc> Avm2<'gc> {
 
         // This will print the properly formatted error
         let stringified = error.to_string(activation);
-        tracing::error!("{}: {}", extra_info, stringified);
+        let message = format!("{extra_info}: {stringified}");
+        let key = FnvBuildHasher::default().hash_one(&message);
+        if activation.context.avm2.logged_uncaught_errors.insert(key) {
+            tracing::error!("{message}");
+        }
     }
 
     /// Returns whether a listener called `preventDefault()`.
