@@ -107,11 +107,37 @@ impl TexturePool {
         let frame = self.frame;
         let fresh = |last: &u64| frame - *last <= max_idle_frames;
         self.last_used.retain(|_, last| fresh(last));
-        self.pools.retain(|key, _| self.last_used.contains_key(key));
+        self.pools.retain(|key, pool| {
+            let used = self.last_used.contains_key(key);
+            if !used {
+                pool.destroy_available();
+            }
+            used
+        });
         self.globals_last_used.retain(|_, last| fresh(last));
         self.globals_cache
             .retain(|key, _| self.globals_last_used.contains_key(key));
         self.frame += 1;
+    }
+
+    pub fn destroy_idle_textures(&self) {
+        for pool in self.pools.values() {
+            pool.destroy_available();
+        }
+    }
+}
+
+impl<Description: BufferDescription> BufferPool<(wgpu::Texture, wgpu::TextureView), Description> {
+    fn destroy_available(&self) {
+        let available = std::mem::take(
+            &mut *self
+                .available
+                .lock()
+                .expect("Should not be able to lock recursively"),
+        );
+        for ((texture, _), _) in available {
+            texture.destroy();
+        }
     }
 }
 

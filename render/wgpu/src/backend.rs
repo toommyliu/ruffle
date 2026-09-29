@@ -11,8 +11,8 @@ use crate::target::{MaybeOwnedBuffer, TextureTarget};
 use crate::target::{RenderTargetFrame, TextureBufferInfo};
 use crate::utils::{BufferDimensions, run_copy_pipeline};
 use crate::{
-    Descriptors, Error, QueueSyncHandle, RenderTarget, SwapChainTarget, Texture, as_texture,
-    format_list, get_backend_names,
+    Descriptors, DroppedTextures, Error, QueueSyncHandle, RenderTarget, SwapChainTarget, Texture,
+    as_texture, format_list, get_backend_names,
 };
 use image::imageops::FilterType;
 use ruffle_render::backend::{
@@ -86,6 +86,7 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     active_frame: ActiveFrame,
     profiler: GpuProfiler,
     mesh_buffers: MeshBuffers,
+    dropped_textures: Arc<DroppedTextures>,
 }
 
 #[derive(Debug)]
@@ -323,6 +324,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             active_frame,
             profiler,
             mesh_buffers,
+            dropped_textures: Default::default(),
         })
     }
 
@@ -522,6 +524,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         );
 
         self.viewport_scale_factor = dimensions.scale_factor;
+        // Only `submit_frame` uses this pool, and it submits what it records.
+        self.texture_pool.destroy_idle_textures();
         self.texture_pool = TexturePool::new();
     }
 
@@ -743,6 +747,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             .end_frame(OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES);
         self.texture_pool.end_frame(TEXTURE_MAX_IDLE_FRAMES);
         self.mesh_buffers.end_frame();
+        self.dropped_textures.destroy();
         crate::stats::set_with(&crate::stats::POOL_BYTES, || {
             self.texture_pool.idle_bytes() as i64
         });
@@ -811,6 +816,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             clamped_linear: Default::default(),
             clamped_nearest: Default::default(),
             copy_count: Cell::new(0),
+            dropped_textures: Some(self.dropped_textures.clone()),
             _live: crate::stats::Live::with_bytes(
                 &crate::stats::LIVE_BITMAP_TEXTURES,
                 &crate::stats::LIVE_BITMAP_BYTES,
@@ -1097,6 +1103,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     clamped_linear: Default::default(),
                     clamped_nearest: Default::default(),
                     copy_count: Cell::new(0),
+                    dropped_textures: Some(self.dropped_textures.clone()),
                     _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                 }))
             }
@@ -1260,6 +1267,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             clamped_linear: Default::default(),
             clamped_nearest: Default::default(),
             copy_count: Cell::new(0),
+            dropped_textures: Some(self.dropped_textures.clone()),
             _live: crate::stats::Live::with_bytes(
                 &crate::stats::LIVE_BITMAP_TEXTURES,
                 &crate::stats::LIVE_EMPTY_TEXTURE_BYTES,

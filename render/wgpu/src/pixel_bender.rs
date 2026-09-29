@@ -488,6 +488,7 @@ pub(super) fn run_pixelbender_shader_impl(
                             clamped_linear: Default::default(),
                             clamped_nearest: Default::default(),
                             copy_count: Cell::new(0),
+                            dropped_textures: None,
                             _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                         }))
                     });

@@ -117,6 +117,7 @@ impl WgpuContext3D {
                 clamped_nearest: Default::default(),
                 texture: dummy_texture,
                 copy_count: Cell::new(0),
+                dropped_textures: None,
                 _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
             }))
         };
@@ -654,6 +655,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        dropped_textures: None,
                         _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                     self.front_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
@@ -663,6 +665,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        dropped_textures: None,
                         _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                 } else {
@@ -676,6 +679,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        dropped_textures: None,
                         _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                     self.front_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
@@ -685,6 +689,7 @@ impl Context3D for WgpuContext3D {
                         clamped_linear: Default::default(),
                         clamped_nearest: Default::default(),
                         copy_count: Cell::new(0),
+                        dropped_textures: None,
                         _live: crate::stats::Live::new(&crate::stats::LIVE_BITMAP_TEXTURES),
                     }));
                     self.current_texture_resolve_view = None;

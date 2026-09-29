@@ -19,7 +19,7 @@ use ruffle_render::shape_utils::GradientType;
 use ruffle_render::tessellator::{Gradient as TessGradient, Vertex as TessVertex};
 use std::any::Any;
 use std::cell::{Cell, OnceCell};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use swf::GradientSpread;
 pub use wgpu;
 pub use wgpu_profiler;
@@ -277,7 +277,45 @@ pub struct Texture {
     clamped_linear: OnceCell<BitmapBinds>,
     clamped_nearest: OnceCell<BitmapBinds>,
     copy_count: Cell<u8>,
+    dropped_textures: Option<Arc<DroppedTextures>>,
     _live: crate::stats::Live,
+}
+
+/// Textures a backend dropped since its last submit. wgpu's WebGPU backend
+/// doesn't destroy a texture when it's dropped, so the browser keeps its
+/// memory until the JavaScript collector finds the texture's wrapper, which
+/// can take minutes. A texture can only be destroyed once the commands
+/// recorded with it have been submitted.
+#[derive(Debug, Default)]
+pub(crate) struct DroppedTextures(Mutex<Vec<wgpu::Texture>>);
+
+impl DroppedTextures {
+    pub fn push(&self, texture: wgpu::Texture) {
+        self.0
+            .lock()
+            .expect("Dropped textures lock shouldn't be poisoned")
+            .push(texture);
+    }
+
+    pub fn destroy(&self) {
+        let textures = std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .expect("Dropped textures lock shouldn't be poisoned"),
+        );
+        for texture in textures {
+            texture.destroy();
+        }
+    }
+}
+
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if let Some(dropped_textures) = &self.dropped_textures {
+            dropped_textures.push(self.texture.clone());
+        }
+    }
 }
 
 impl Texture {

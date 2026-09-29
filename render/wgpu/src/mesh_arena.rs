@@ -189,6 +189,7 @@ impl BufferArena {
                     &crate::stats::MESH_BUFFER_BYTES,
                     -(chunk.buffer.size() as i64),
                 );
+                chunk.buffer.destroy();
                 state.chunks[index] = None;
                 continue;
             }
