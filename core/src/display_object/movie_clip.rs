@@ -201,6 +201,10 @@ pub struct MovieClipData<'gc> {
     #[collect(require_static)]
     drawing: OnceCell<Box<RefCell<Drawing>>>,
 
+    /// The SWF whose ActionScript created this clip, if ActionScript did.
+    #[collect(require_static)]
+    created_by: OnceCell<Arc<SwfMovie>>,
+
     last_queued_script_frame: Cell<Option<FrameNumber>>,
     queued_script_frame: Cell<FrameNumber>,
 
@@ -252,6 +256,7 @@ impl<'gc> MovieClipData<'gc> {
             clip_event_flags: Cell::new(ClipEventFlag::empty()),
             flags: Cell::new(MovieClipFlags::empty()),
             drawing: OnceCell::new(),
+            created_by: OnceCell::new(),
             avm2_enabled: Cell::new(true),
             avm2_use_hand_cursor: Cell::new(true),
             button_mode: Cell::new(false),
@@ -373,6 +378,20 @@ impl<'gc> MovieClip<'gc> {
 
     pub fn instantiate(self, mc: &Mutation<'gc>) -> Self {
         Self(Gc::new(mc, (*self.0).clone()))
+    }
+
+    pub fn set_created_by(self, movie: Arc<SwfMovie>) {
+        let _ = self.0.created_by.set(movie);
+    }
+
+    /// Flash sends the errors of a clip's frame scripts to the SWF that
+    /// created it.
+    fn created_by(self) -> Arc<SwfMovie> {
+        self.0
+            .created_by
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.movie())
     }
 
     /// Replace the current MovieClipData with a completely new SwfMovie.
@@ -2520,7 +2539,7 @@ impl<'gc> MovieClip<'gc> {
                         self.stop(activation.context);
                         Avm2::uncaught_error(
                             &mut activation,
-                            Some(self.movie()),
+                            Some(self.created_by()),
                             e,
                             "Error running AVM2 frame script",
                         );

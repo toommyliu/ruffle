@@ -43,6 +43,11 @@ pub fn sprite_allocator<'gc>(
                 .instantiate_by_id(symbol, activation.context.gc_context);
 
             if let Some(child) = child {
+                if let (Some(clip), Some(creator)) =
+                    (child.as_movie_clip(), activation.caller_movie())
+                {
+                    clip.set_created_by(creator);
+                }
                 return Ok(initialize_for_allocator(activation.context, child, orig_class).into());
             } else {
                 return Err(make_error_2136(activation));
