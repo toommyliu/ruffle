@@ -775,7 +775,7 @@ impl<'gc> ChildContainer<'gc> {
                             if let Err(err) = res {
                                 Avm2::uncaught_error(
                                     &mut activation,
-                                    Some(child),
+                                    Some(child.movie()),
                                     err,
                                     &format!("Error setting AVM2 child named \"{}\" to null", name),
                                 );

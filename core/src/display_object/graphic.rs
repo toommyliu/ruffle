@@ -223,7 +223,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
                 Err(err) => {
                     Avm2::uncaught_error(
                         &mut activation,
-                        Some(self.into()),
+                        Some(self.movie()),
                         err,
                         "Error running AVM2 construction for shape",
                     );

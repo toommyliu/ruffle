@@ -1,0 +1,7 @@
+num_ticks = 70
+
+# The output.txt is obtained from Flash Player 32 (PPAPI) for macOS.
+# Each SWF links a two-frame sprite to Part or MainPart, which Asc can't declare.
+
+[player_options]
+mode = "Release"

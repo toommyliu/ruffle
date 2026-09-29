@@ -8,6 +8,7 @@ use crate::avm2::error::{
     make_error_2022, make_error_2023,
 };
 use crate::avm2::function::exec;
+use crate::avm2::globals::slots::flash_display_loader as loader_slots;
 use crate::avm2::globals::{
     SystemClassDefs, SystemClasses, init_builtin_system_class_defs, init_builtin_system_classes,
     init_native_system_classes,
@@ -19,7 +20,7 @@ use crate::avm2::script::{Script, TranslationUnit};
 use crate::avm2::stack::Stack;
 use crate::character::Character;
 use crate::context::UpdateContext;
-use crate::display_object::{DisplayObject, MovieClip, TDisplayObject};
+use crate::display_object::{MovieClip, TDisplayObject};
 use crate::string::{AvmString, StringContext};
 use crate::tag_utils::SwfMovie;
 use crate::{PlayerMode, PlayerRuntime};
@@ -193,6 +194,8 @@ pub struct Avm2<'gc> {
     pub debug_output: bool,
 
     pub optimizer_enabled: bool,
+
+    dispatching_uncaught_error: bool,
 }
 
 impl<'gc> Avm2<'gc> {
@@ -244,6 +247,8 @@ impl<'gc> Avm2<'gc> {
             debug_output: false,
 
             optimizer_enabled: true,
+
+            dispatching_uncaught_error: false,
         }
     }
 
@@ -716,13 +721,13 @@ impl<'gc> Avm2<'gc> {
         self.optimizer_enabled = value;
     }
 
-    // Report an uncaught AVM2 error.
-    // TODO should the `display_object` parameter be optional or not?
+    /// Report an error that escaped code the player ran, owned by the SWF
+    /// `owner` (the root movie if `None`).
     #[cold]
     #[inline(never)]
     pub fn uncaught_error(
         activation: &mut Activation<'_, 'gc>,
-        _display_object: Option<DisplayObject<'gc>>,
+        owner: Option<Arc<SwfMovie>>,
         error: Error<'gc>,
         extra_info: &str,
     ) {
@@ -734,11 +739,64 @@ impl<'gc> Avm2<'gc> {
             activation.context.avm_trace(&stringified);
         }
 
+        if let Some(thrown) = error.as_avm_error()
+            && Self::dispatch_uncaught_error(activation, owner, thrown)
+        {
+            return;
+        }
+
         // This will print the properly formatted error
         let stringified = error.to_string(activation);
         tracing::error!("{}: {}", extra_info, stringified);
+    }
 
-        // TODO: push the error onto `loaderInfo.uncaughtErrorEvents`
+    /// Returns whether a listener called `preventDefault()`.
+    fn dispatch_uncaught_error(
+        activation: &mut Activation<'_, 'gc>,
+        owner: Option<Arc<SwfMovie>>,
+        thrown: Value<'gc>,
+    ) -> bool {
+        // A listener that throws would otherwise be sent its own error forever.
+        if activation.context.avm2.dispatching_uncaught_error {
+            return false;
+        }
+
+        let mc = activation.gc();
+        let library = &activation.context.library;
+        let loader_info_of = |movie: Arc<SwfMovie>| {
+            library
+                .library_for_movie(movie)
+                .and_then(|library| library.loader_info(mc))
+        };
+        let Some(mut loader_info) = owner
+            .and_then(loader_info_of)
+            .or_else(|| loader_info_of(activation.context.root_swf.clone()))
+        else {
+            return false;
+        };
+
+        let mut path = vec![loader_info.uncaught_error_events()];
+        while let Some(loader) = loader_info.loader() {
+            if let Some(events) = loader
+                .get_slot(loader_slots::_UNCAUGHT_ERROR_EVENTS)
+                .as_object()
+            {
+                path.push(events);
+            }
+            match loader_info_of(loader.display_object().movie()) {
+                Some(parent) if !Gc::ptr_eq(parent.0, loader_info.0) => {
+                    loader_info = parent;
+                    path.push(loader_info.uncaught_error_events());
+                }
+                _ => break,
+            }
+        }
+
+        let event = EventObject::uncaught_error_event(activation, thrown);
+        activation.context.avm2.dispatching_uncaught_error = true;
+        events::dispatch_event_through(activation, path[0], path[0], &path[1..], event, false);
+        activation.context.avm2.dispatching_uncaught_error = false;
+        event.event().is_cancelled()
     }
 }
 

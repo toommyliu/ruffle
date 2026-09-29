@@ -163,7 +163,8 @@ impl<'gc> Timers<'gc> {
                         Err(err) => {
                             Avm2::uncaught_error(
                                 &mut avm2_activation,
-                                None, // TODO do we need to set this?
+                                closure
+                                    .map(|closure| closure.executable().as_method().owner_movie()),
                                 err,
                                 "Error in AVM2 timer callback",
                             );

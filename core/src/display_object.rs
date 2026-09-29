@@ -2572,7 +2572,7 @@ pub trait TDisplayObject<'gc>:
                 if let Err(err) = set_result {
                     Avm2::uncaught_error(
                         &mut activation,
-                        Some(self),
+                        Some(self.movie()),
                         err,
                         &format!("Error setting AVM2 child named \"{}\"", name),
                     );

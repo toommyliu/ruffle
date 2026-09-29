@@ -332,6 +332,23 @@ impl<'gc> EventObject<'gc> {
         )
     }
 
+    pub fn uncaught_error_event(
+        activation: &mut Activation<'_, 'gc>,
+        error: Value<'gc>,
+    ) -> EventObject<'gc> {
+        let uncaught_error_event_cls = activation.avm2().classes().uncaughterrorevent;
+        Self::from_class_and_args(
+            activation,
+            uncaught_error_event_cls,
+            &[
+                istr!("uncaughtError").into(),
+                true.into(),
+                true.into(),
+                error,
+            ],
+        )
+    }
+
     pub fn http_status_event(
         activation: &mut Activation<'_, 'gc>,
         status: u16,

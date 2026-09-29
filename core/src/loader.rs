@@ -1785,6 +1785,9 @@ impl<'gc> MovieLoader<'gc> {
                 let library = uc.library.library_for_movie_mut(movie.clone());
 
                 library.set_avm2_domain(domain);
+                if let MovieLoaderVMData::Avm2 { loader_info, .. } = vm_data {
+                    library.set_loader_info(loader_info);
+                }
 
                 if let Some(mc) = clip.as_movie_clip() {
                     let loader_info = if let MovieLoaderVMData::Avm2 { loader_info, .. } = vm_data {

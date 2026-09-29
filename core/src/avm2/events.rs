@@ -454,7 +454,7 @@ fn dispatch_event_to_target<'gc>(
 
             Avm2::uncaught_error(
                 activation,
-                None, // TODO we need to set this, but how?
+                Some(handler.executable().as_method().owner_movie()),
                 err,
                 &format!("Error dispatching event \"{}\"", event_name),
             );
@@ -483,6 +483,25 @@ pub fn dispatch_event<'gc>(
         parent = parent_dobj.parent();
     }
 
+    dispatch_event_through(
+        activation,
+        this,
+        target,
+        &ancestor_list,
+        event,
+        simulate_dispatch,
+    )
+}
+
+/// `ancestor_list` runs from the nearest ancestor to the farthest.
+pub fn dispatch_event_through<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    target: Object<'gc>,
+    ancestor_list: &[Object<'gc>],
+    event: EventObject<'gc>,
+    simulate_dispatch: bool,
+) -> bool {
     event
         .event_mut(activation.gc())
         .set_phase(EventPhase::Capturing);

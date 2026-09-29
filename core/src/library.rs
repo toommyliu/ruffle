@@ -1,4 +1,5 @@
 use crate::avm1::{PropertyMap as Avm1PropertyMap, PropertyMap};
+use crate::avm2::object::{LoaderInfoObject, LoaderInfoObjectWeak};
 use crate::avm2::{Class as Avm2Class, Domain as Avm2Domain};
 use crate::backend::audio::SoundHandle;
 use crate::character::Character;
@@ -148,6 +149,7 @@ pub struct MovieLibrary<'gc> {
     jpeg_tables: Option<Vec<u8>>,
     fonts: FontMap<'gc>,
     avm2_domain: Option<Avm2Domain<'gc>>,
+    loader_info: Option<LoaderInfoObjectWeak<'gc>>,
 
     evidence: Vec<GcWeak<'gc, ()>>,
 
@@ -164,6 +166,7 @@ impl<'gc> MovieLibrary<'gc> {
             jpeg_tables: None,
             fonts: Default::default(),
             avm2_domain: None,
+            loader_info: None,
             evidence: Vec::new(),
             created_cycle,
         }
@@ -398,6 +401,16 @@ impl<'gc> MovieLibrary<'gc> {
         self.avm2_domain = Some(avm2_domain);
     }
 
+    pub fn set_loader_info(&mut self, loader_info: LoaderInfoObject<'gc>) {
+        self.loader_info = Some(LoaderInfoObjectWeak(Gc::downgrade(loader_info.0)));
+    }
+
+    pub fn loader_info(&self, mc: &Mutation<'gc>) -> Option<LoaderInfoObject<'gc>> {
+        self.loader_info
+            .and_then(|loader_info| loader_info.0.upgrade(mc))
+            .map(LoaderInfoObject)
+    }
+
     /// Get the AVM2 domain this movie runs under.
     ///
     /// Note that the presence of an AVM2 domain does *not* indicate that this
@@ -443,9 +456,9 @@ impl ruffle_render::bitmap::BitmapSource for MovieLibrarySource<'_, '_> {
 
 struct MovieLibraries<'gc>(PtrWeakKeyHashMap<Weak<SwfMovie>, MovieLibrary<'gc>>);
 
-// SAFETY: Only the evidence is traced, weakly. Before every sweep, `Library`
-// resurrects what the libraries of movies still in use hold and drops the
-// rest.
+// SAFETY: Only the evidence and the loader info are traced, weakly. Before
+// every sweep, `Library` resurrects what the libraries of movies still in use
+// hold and drops the rest.
 unsafe impl<'gc> Collect<'gc> for MovieLibraries<'gc> {
     #[inline]
     fn trace<C: Trace<'gc>>(&self, cc: &mut C) {
@@ -453,6 +466,7 @@ unsafe impl<'gc> Collect<'gc> for MovieLibraries<'gc> {
             for &object in &library.evidence {
                 cc.trace_gc_weak(object);
             }
+            library.loader_info.trace(cc);
         }
     }
 }

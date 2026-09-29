@@ -1,0 +1,3 @@
+main loaderInfo: child frame script 1
+main loaderInfo: child frame script 2
+main loaderInfo: child frame script 3

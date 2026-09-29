@@ -1,0 +1,10 @@
+Loader.uncaughtErrorEvents is contentLoaderInfo.uncaughtErrorEvents: false
+child frame script on stage (frame scripts run 1): main loaderInfo capture (phase 1, error child frame 1 script); child loaderInfo (phase 2, error child frame 1 script); Loader (phase 3, error child frame 1 script); main loaderInfo (phase 3, error child frame 1 script)
+child enterFrame handler (frame scripts run 1): main loaderInfo capture (phase 1, error child enterFrame handler); child loaderInfo (phase 2, error child enterFrame handler); Loader (phase 3, error child enterFrame handler); main loaderInfo (phase 3, error child enterFrame handler)
+child setTimeout (frame scripts run 1): main loaderInfo capture (phase 1, error child setTimeout); child loaderInfo (phase 2, error child setTimeout); Loader (phase 3, error child setTimeout); main loaderInfo (phase 3, error child setTimeout)
+child frame script without an error (frame scripts run 2): none
+child frame script error in a goto called from main: not caught
+child frame script in a goto (frame scripts run 3): main loaderInfo capture (phase 1, error child frame 2 script); child loaderInfo (phase 2, error child frame 2 script); Loader (phase 3, error child frame 2 script); main loaderInfo (phase 3, error child frame 2 script)
+child frame script off stage (frame scripts run 4): main loaderInfo capture (phase 1, error child frame 1 script); child loaderInfo (phase 2, error child frame 1 script); Loader (phase 3, error child frame 1 script); main loaderInfo (phase 3, error child frame 1 script)
+main frame script (frame scripts run 5): main loaderInfo (phase 2, error main frame 1 script)
+main code called by child (frame scripts run 5): main loaderInfo (phase 2, error main code called by child)

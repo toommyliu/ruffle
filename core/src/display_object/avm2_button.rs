@@ -556,7 +556,7 @@ impl<'gc> TDisplayObject<'gc> for Avm2Button<'gc> {
                     if let Err(err) = result {
                         Avm2::uncaught_error(
                             &mut activation,
-                            Some(self.into()),
+                            Some(self.movie()),
                             err,
                             "Error running AVM2 construction for button",
                         );

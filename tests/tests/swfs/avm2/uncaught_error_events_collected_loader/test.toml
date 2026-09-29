@@ -1,0 +1,15 @@
+num_ticks = 60
+
+# The output.txt is obtained from Flash Player 32 (PPAPI) for macOS.
+# child.swf links a two-frame sprite to Part and leaves its main timeline
+# without a class, which Asc can't do.
+
+[[compilers]]
+type = "Asc"
+target = "test.swf"
+class = "Test"
+scripts = ["Test.as"]
+swf_version = 11
+
+[player_options]
+mode = "Release"

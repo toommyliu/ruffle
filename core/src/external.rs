@@ -329,7 +329,7 @@ impl<'gc> Callback<'gc> {
                     Err(err) => {
                         Avm2::uncaught_error(
                             &mut activation,
-                            None, // TODO do we need to set this?
+                            Some(method.executable().as_method().owner_movie()),
                             err,
                             "Error in AVM2 external interface callback",
                         );

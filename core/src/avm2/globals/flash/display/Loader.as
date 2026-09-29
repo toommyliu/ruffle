@@ -15,6 +15,9 @@ package flash.display {
         [Ruffle(NativeAccessible)]
         private var _contentLoaderInfo:LoaderInfo;
 
+        [Ruffle(NativeAccessible)]
+        private var _uncaughtErrorEvents:UncaughtErrorEvents = new UncaughtErrorEvents();
+
         public function get contentLoaderInfo():LoaderInfo {
             return this._contentLoaderInfo;
         }
@@ -61,7 +64,7 @@ package flash.display {
 
         [API("667")]
         public function get uncaughtErrorEvents():UncaughtErrorEvents {
-            return this.contentLoaderInfo.uncaughtErrorEvents;
+            return this._uncaughtErrorEvents;
         }
     }
 }

@@ -377,6 +377,7 @@ ruffle_macros::define_common_strings! {
     "tx",
     "ty",
     "type",
+    "uncaughtError",
     "uncommon",
     "undefined",
     "uppercase",
