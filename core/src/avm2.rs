@@ -783,7 +783,11 @@ impl<'gc> Avm2<'gc> {
             {
                 path.push(events);
             }
-            match loader_info_of(loader.display_object().movie()) {
+            let parent = loader
+                .display_object()
+                .avm2_root()
+                .and_then(|root| root.loader_info());
+            match parent {
                 Some(parent) if !Gc::ptr_eq(parent.0, loader_info.0) => {
                     loader_info = parent;
                     path.push(loader_info.uncaught_error_events());

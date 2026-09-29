@@ -2,6 +2,9 @@ clip created by the middle SWF
 middle loaderInfo (phase 2)
 middle Loader (phase 3)
 root loaderInfo (phase 3)
+clip created by a child whose Loader isn't on the display list
+off-list child loaderInfo (phase 2)
+off-list Loader (phase 3)
 clip created by a child whose Loader is in the middle SWF
 on-list child loaderInfo (phase 2)
 on-list Loader (phase 3)

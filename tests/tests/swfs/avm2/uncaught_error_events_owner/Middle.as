@@ -60,10 +60,14 @@ package {
                     throwFrom(offList, false);
                     break;
                 case 6:
+                    log("clip created by a child whose Loader isn't on the display list");
+                    throwFrom(offList, true);
+                    break;
+                case 11:
                     log("clip created by a child whose Loader is in the middle SWF");
                     throwFrom(onList, true);
                     break;
-                case 11:
+                case 16:
                     removeEventListener(Event.ENTER_FRAME, onEnterFrame);
                     if (ExternalInterface.available) {
                         ExternalInterface.call("report", "done");
