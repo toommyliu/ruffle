@@ -401,10 +401,10 @@ pub struct Player {
 
     /// A time budget for executing frames.
     /// Gained by passage of time between host frames, spent by executing SWF frames.
-    /// This is how we support custom SWF framerates
-    /// and compensate for small lags by "catching up" (up to MAX_FRAMES_PER_TICK).
+    /// Flash renders after every frame, and content that times its frames with `getTimer`
+    /// or `Date` expects time to pass between them. So a tick runs at most one frame, and
+    /// a host that ticks slower than the frame rate slows the movie down, as Flash does.
     frame_accumulator: FloatDuration,
-    recent_run_frame_timings: VecDeque<f64>,
 
     frames_run: u64,
 
@@ -542,39 +542,6 @@ impl Player {
         });
     }
 
-    /// Get rough estimate of the max # of times we can update the frame.
-    ///
-    /// In some cases, we might want to update several times in a row.
-    /// For example, if the game runs at 60FPS, but the host runs at 30FPS
-    /// Or if for some reason the we miss a couple of frames.
-    /// However, if the code is simply slow, this is the opposite of what we want;
-    /// If run_frame() consistently takes say 100ms, we don't want `tick` to try to "catch up",
-    /// as this will only make it worse.
-    ///
-    /// This rough heuristic manages this job; for example if average run_frame()
-    /// takes more than 1/3 of frame_time, we shouldn't run it more than twice in a row.
-    /// This logic is far from perfect, as it doesn't take into account
-    /// that things like rendering also take time. But for now it's good enough.
-    fn max_frames_per_tick(&self) -> u32 {
-        const MAX_FRAMES_PER_TICK: u32 = 5;
-
-        if self.recent_run_frame_timings.is_empty() {
-            5
-        } else {
-            let frame_time = self.frame_time(1000.0);
-            let average_run_frame_time = self.recent_run_frame_timings.iter().sum::<f64>()
-                / self.recent_run_frame_timings.len() as f64;
-            ((frame_time / average_run_frame_time) as u32).clamp(1, MAX_FRAMES_PER_TICK)
-        }
-    }
-
-    fn add_frame_timing(&mut self, elapsed: f64) {
-        self.recent_run_frame_timings.push_back(elapsed);
-        if self.recent_run_frame_timings.len() >= 10 {
-            self.recent_run_frame_timings.pop_front();
-        }
-    }
-
     fn frame_time(&self, time_unit: f64) -> f64 {
         let frame_rate = self.frame_rate;
         if frame_rate == 0.0 || frame_rate.is_nan() {
@@ -597,18 +564,9 @@ impl Player {
         self.frame_accumulator += dt;
         let frame_duration = self.frame_duration();
 
-        let max_frames_per_tick = self.max_frames_per_tick();
-        let mut frame = 0;
-
-        while frame < max_frames_per_tick && self.frame_accumulator >= frame_duration {
-            let timer = Instant::now();
+        if self.frame_accumulator >= frame_duration {
             self.run_frame();
-            let elapsed = timer.elapsed().as_millis() as f64;
-
-            self.add_frame_timing(elapsed);
-
             self.frame_accumulator -= frame_duration;
-            frame += 1;
             // The script probably tried implementing an FPS limiter with a busy loop.
             // We fooled the busy loop by pretending that more time has passed that actually did.
             // Then we need to actually pass this time, by decreasing frame_accumulator
@@ -620,7 +578,6 @@ impl Player {
             // If we are stepping a single frame, immediately suspend ourselves.
             if self.run_state == RunState::Stepping {
                 self.set_run_state(RunState::Suspended);
-                break;
             }
         }
 
@@ -633,11 +590,8 @@ impl Player {
         // so timer callbacks won't get cancelled/delayed.
         self.time_offset = 0;
 
-        // Sanity: If we had too many frames to tick, just reset the accumulator
-        // to prevent running at turbo speed.
-        if self.frame_accumulator >= frame_duration {
-            self.frame_accumulator = FloatDuration::ZERO;
-        }
+        // Hosts that tick at the frame rate jitter around it; keep the frame that's due.
+        self.frame_accumulator = self.frame_accumulator.min(frame_duration);
 
         // Adjust playback speed for next frame to stay in sync with timeline audio tracks ("stream" sounds).
         let cur_frame_offset = self.frame_accumulator.as_millis();
@@ -3164,7 +3118,6 @@ impl PlayerBuilder {
                 forced_frame_rate,
                 frame_phase: Default::default(),
                 frame_accumulator: FloatDuration::ZERO,
-                recent_run_frame_timings: VecDeque::with_capacity(10),
                 frames_run: 0,
                 start_time: Instant::now(),
                 time_offset: 0,
