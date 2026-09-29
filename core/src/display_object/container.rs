@@ -1149,6 +1149,7 @@ impl<'gc> ChildContainer<'gc> {
         // Note that the depth returned by AS will be offset by the `AVM_DEPTH_BIAS`, so this is really `-(cur_depth+1+AVM_DEPTH_BIAS)`
         child.set_depth(-cur_depth - 1);
         child.set_avm1_pending_removal(true);
+        context.avm1.set_has_pending_removals();
 
         if let Some(mc) = child.as_movie_clip() {
             // Clip events should still fire
