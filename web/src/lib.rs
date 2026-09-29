@@ -541,9 +541,8 @@ impl RuffleHandle {
         parent: HtmlElement,
         js_player: JavascriptPlayer,
         config: RuffleInstanceBuilder,
+        log_subscriber: Arc<Layered<WASMLayer, Registry>>,
     ) -> Result<Self, Box<dyn Error>> {
-        let log_subscriber = config.create_log_subscriber();
-        let _subscriber = tracing::subscriber::set_default(log_subscriber.clone());
         let window = web_sys::window().ok_or("Expected window")?;
 
         let player = config

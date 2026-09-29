@@ -26,6 +26,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::instrument::WithSubscriber;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::{Layered, SubscriberExt};
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
@@ -369,9 +370,12 @@ impl RuffleInstanceBuilder {
                 return Err("Ruffle is panicking!".into());
             }
 
-            let ruffle = RuffleHandle::new_internal(parent, js_player, copy)
-                .await
-                .map_err(|err| JsValue::from(format!("Error creating player: {err}")))?;
+            let log_subscriber = copy.create_log_subscriber();
+            let ruffle =
+                RuffleHandle::new_internal(parent, js_player, copy, log_subscriber.clone())
+                    .with_subscriber(log_subscriber)
+                    .await
+                    .map_err(|err| JsValue::from(format!("Error creating player: {err}")))?;
             Ok(JsValue::from(ruffle))
         })
     }

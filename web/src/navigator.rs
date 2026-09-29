@@ -20,6 +20,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+use tracing::instrument::WithSubscriber;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::Layered;
 use tracing_wasm::WASMLayer;
@@ -447,8 +448,7 @@ impl NavigatorBackend for WebNavigatorBackend {
         let subscriber = self.log_subscriber.clone();
         let player = self.player.clone();
 
-        spawn_local(async move {
-            let _subscriber = tracing::subscriber::set_default(subscriber.clone());
+        let task = async move {
             if player
                 .upgrade()
                 .expect("Called spawn_future after player was dropped")
@@ -476,7 +476,8 @@ impl NavigatorBackend for WebNavigatorBackend {
             if let Err(e) = future.await {
                 tracing::error!("Asynchronous error occurred: {}", e);
             }
-        })
+        };
+        spawn_local(task.with_subscriber(subscriber));
     }
 
     fn pre_process_url(&self, mut url: Url) -> Url {
