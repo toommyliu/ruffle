@@ -2515,6 +2515,9 @@ impl<'gc> MovieClip<'gc> {
                         avm2_object.into(),
                         Avm2FunctionArgs::empty(),
                     ) {
+                        // Flash stops a clip whose frame script throws, before
+                        // it dispatches the error.
+                        self.stop(activation.context);
                         Avm2::uncaught_error(
                             &mut activation,
                             Some(self.movie()),

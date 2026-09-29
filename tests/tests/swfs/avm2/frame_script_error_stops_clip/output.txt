@@ -1,0 +1,7 @@
+frame 1: offStage 1, onStage 1, playedLater 1, gotoAndPlayThenThrow 1, playedByHandler 1, enterFrameListenerThrows 1; threw: enterFrameListenerThrows
+frame 2: offStage 2, onStage 2, playedLater 2, gotoAndPlayThenThrow 2, playedByHandler 2, enterFrameListenerThrows 2
+frame 3: offStage 2, onStage 2, playedLater 2, gotoAndPlayThenThrow 1, playedByHandler 3, enterFrameListenerThrows 3; threw: gotoAndPlayThenThrow, offStage, onStage, playedByHandler, playedLater
+frame 4: offStage 2, onStage 2, playedLater 2, gotoAndPlayThenThrow 2, playedByHandler 1, enterFrameListenerThrows 1
+frame 5: offStage 2, onStage 2, playedLater 3, gotoAndPlayThenThrow 3, playedByHandler 2, enterFrameListenerThrows 2
+frame 6: offStage 2, onStage 2, playedLater 1, gotoAndPlayThenThrow 1, playedByHandler 3, enterFrameListenerThrows 3
+frame 7: offStage 2, onStage 2, playedLater 2, gotoAndPlayThenThrow 2, playedByHandler 1, enterFrameListenerThrows 1
