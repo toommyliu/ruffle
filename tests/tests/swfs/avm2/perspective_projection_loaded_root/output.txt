@@ -1,0 +1,7 @@
+main root: fieldOfView=55.0000 projectionCenter=(x=275, y=200)
+loaded root in its Loader: fieldOfView=55.0000 projectionCenter=(x=150, y=100)
+loaded root under the main root: fieldOfView=55.0000 projectionCenter=(x=150, y=100)
+loaded root on the stage: fieldOfView=55.0000 projectionCenter=(x=150, y=100)
+root of an object under it (root is loaded root: true): fieldOfView=55.0000 projectionCenter=(x=150, y=100)
+loaded root after setting null: fieldOfView=55.0000 projectionCenter=(x=150, y=100)
+loaded root off the display list: fieldOfView=55.0000 projectionCenter=(x=150, y=100)

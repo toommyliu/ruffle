@@ -1,0 +1,17 @@
+num_ticks = 5
+
+# The output.txt is obtained from Flash Player 32 (PPAPI) for macOS.
+
+[[compilers]]
+type = "Asc"
+target = "test.swf"
+class = "Test"
+scripts = ["Test.as"]
+swf_version = 11
+
+[[compilers]]
+type = "Asc"
+target = "child.swf"
+class = "Child"
+scripts = ["Child.as"]
+swf_version = 11

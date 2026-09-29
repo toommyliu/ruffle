@@ -408,6 +408,9 @@ impl<'gc> MovieClip<'gc> {
         write.current_frame.set(0);
         write.audio_stream.take();
         self.mark_enter_frame_work();
+        if is_root {
+            self.set_perspective_projection(None);
+        }
     }
 
     pub fn set_initialized(self) {
