@@ -3,7 +3,7 @@ use crate::buffer_pool::{AlwaysCompatible, PoolEntry, TexturePool};
 use crate::descriptors::Descriptors;
 use crate::globals::Globals;
 use crate::utils::run_copy_pipeline;
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -189,10 +189,22 @@ impl StencilBuffer {
     }
 }
 
+/// With multisampling, a pass keeps its samples only while it runs: it
+/// resolves into one of two resolve buffers and discards them, and the next
+/// pass starts by drawing that image into the frame buffer and resolves into
+/// the other buffer (a pass can't sample the buffer it resolves into).
+/// Storing and reloading the samples instead moves the whole multisampled
+/// texture twice a pass, which dominates GPU time on large targets. The cost is
+/// that an edge drawn over one from an earlier pass blends with its resolved
+/// pixel, so the image depends slightly on where passes split.
 pub struct CommandTarget {
     frame_buffer: FrameBuffer,
     blend_buffer: OnceCell<BlendBuffer>,
     resolve_buffer: Option<ResolveBuffer>,
+    spare_resolve_buffer: OnceCell<ResolveBuffer>,
+    resolved_to_spare: Cell<bool>,
+    reseed_bind_groups: [OnceCell<wgpu::BindGroup>; 2],
+    frame_buffer_holds_image: Cell<bool>,
     depth: OnceCell<StencilBuffer>,
     globals: Arc<Globals>,
     size: wgpu::Extent3d,
@@ -264,41 +276,24 @@ impl CommandTarget {
             };
 
         if let RenderTargetMode::FreshWithTexture(texture) = &render_target_mode {
-            if let Some(resolve_buffer) = &resolve_buffer {
-                encoder.copy_texture_to_texture(
-                    texture.as_image_copy(),
-                    resolve_buffer.texture().as_image_copy(),
-                    size,
-                );
-            }
-
-            if sample_count > 1 {
-                // Both our frame buffer and resolve buffer need to start out
-                // in the same state, so copy our existing texture to the freshly
-                // allocated frame buffer. We cannot use `copy_texture_to_texture`,
-                // since the sample counts are different.
-                run_copy_pipeline(
-                    descriptors,
-                    format,
-                    frame_buffer.texture.view(),
-                    &texture.create_view(&Default::default()),
-                    &globals,
-                    sample_count,
-                    encoder,
-                );
-            } else {
-                encoder.copy_texture_to_texture(
-                    texture.as_image_copy(),
-                    frame_buffer.texture().as_image_copy(),
-                    size,
-                );
-            }
+            encoder.copy_texture_to_texture(
+                texture.as_image_copy(),
+                resolve_buffer
+                    .as_ref()
+                    .map_or_else(|| frame_buffer.texture(), |b| b.texture())
+                    .as_image_copy(),
+                size,
+            );
         }
 
         Self {
             frame_buffer,
             blend_buffer: OnceCell::new(),
             resolve_buffer,
+            spare_resolve_buffer: OnceCell::new(),
+            resolved_to_spare: Cell::new(false),
+            reseed_bind_groups: Default::default(),
+            frame_buffer_holds_image: Cell::new(false),
             depth: OnceCell::new(),
             globals,
             size,
@@ -333,7 +328,34 @@ impl CommandTarget {
         }
     }
 
+    /// Leaves the image in the texture this target was made for, if it has one.
+    pub fn finish(&self, descriptors: &Descriptors, encoder: &mut wgpu::CommandEncoder) {
+        if let (Some(primary), RenderTargetMode::ExistingWithColor(..), true) = (
+            &self.resolve_buffer,
+            &self.render_target_mode,
+            self.resolved_to_spare.get(),
+        ) {
+            run_copy_pipeline(
+                descriptors,
+                self.format,
+                primary.view(),
+                self.color_view(),
+                &self.globals,
+                1,
+                encoder,
+            );
+            self.resolved_to_spare.set(false);
+        }
+    }
+
     pub fn take_color_texture(self) -> PoolOrArcTexture {
+        if self.resolved_to_spare.get() {
+            return self
+                .spare_resolve_buffer
+                .into_inner()
+                .expect("Resolved into the spare buffer")
+                .take_texture();
+        }
         self.resolve_buffer
             .map(|b| b.take_texture())
             .unwrap_or_else(|| self.frame_buffer.take_texture())
@@ -343,21 +365,165 @@ impl CommandTarget {
         &self.globals
     }
 
+    /// For a pass that loads and stores the frame buffer's samples: with
+    /// multisampling, call `restore_frame_buffer` first.
     pub fn color_attachments(&self) -> Option<wgpu::RenderPassColorAttachment<'_>> {
         let mut load = wgpu::LoadOp::Load;
         if self.color_needs_clear.set(false).is_ok()
             && let Some(clear_color) = self.render_target_mode.color()
         {
             load = wgpu::LoadOp::Clear(clear_color);
+        } else {
+            debug_assert!(self.resolve_buffer.is_none() || self.frame_buffer_holds_image.get());
         }
+        self.frame_buffer_holds_image.set(true);
         Some(wgpu::RenderPassColorAttachment {
             view: self.frame_buffer.view(),
-            resolve_target: self.resolve_buffer.as_ref().map(|b| b.view()),
+            resolve_target: self.resolved().map(|b| b.view()),
             ops: wgpu::Operations {
                 load,
                 store: wgpu::StoreOp::Store,
             },
             depth_slice: None,
+        })
+    }
+
+    pub fn restore_frame_buffer(
+        &self,
+        descriptors: &Descriptors,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        if self.resolve_buffer.is_none()
+            || self.frame_buffer_holds_image.get()
+            || (self.color_needs_clear.get().is_none() && self.render_target_mode.color().is_some())
+        {
+            return;
+        }
+        self.color_needs_clear.set(false).ok();
+        run_copy_pipeline(
+            descriptors,
+            self.format,
+            self.frame_buffer.view(),
+            self.color_view(),
+            &self.globals,
+            self.sample_count,
+            encoder,
+        );
+        self.frame_buffer_holds_image.set(true);
+    }
+
+    /// The color attachment for a pass, and, with multisampling, the image the
+    /// pass has to draw first with `reseed` (the samples of the last pass are
+    /// gone).
+    pub fn pass_color_attachment(
+        &self,
+        descriptors: &Descriptors,
+        pool: &mut TexturePool,
+    ) -> (
+        Option<wgpu::RenderPassColorAttachment<'_>>,
+        Option<&wgpu::BindGroup>,
+    ) {
+        let Some(primary) = self
+            .resolve_buffer
+            .as_ref()
+            .filter(|_| !crate::stats::keep_samples())
+        else {
+            return (self.color_attachments(), None);
+        };
+        let clear_color = self
+            .color_needs_clear
+            .set(false)
+            .is_ok()
+            .then(|| self.render_target_mode.color())
+            .flatten();
+        let (load, reseed) = match clear_color {
+            Some(color) => (wgpu::LoadOp::Clear(color), None),
+            None if self.frame_buffer_holds_image.get() => (wgpu::LoadOp::Load, None),
+            None => {
+                let image = self.color_view();
+                let reseed = self.reseed_bind_groups[usize::from(self.resolved_to_spare.get())]
+                    .get_or_init(|| {
+                        descriptors
+                            .device
+                            .create_bind_group(&wgpu::BindGroupDescriptor {
+                                layout: &descriptors.bind_layouts.bitmap,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(image),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(
+                                            descriptors.bitmap_samplers.get_sampler(false, false),
+                                        ),
+                                    },
+                                ],
+                                label: create_debug_label!("Reseed bind group").as_deref(),
+                            })
+                    });
+                self.resolved_to_spare.set(!self.resolved_to_spare.get());
+                (wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), Some(reseed))
+            }
+        };
+        self.frame_buffer_holds_image.set(false);
+        let resolve = if self.resolved_to_spare.get() {
+            self.spare_resolve_buffer.get_or_init(|| {
+                ResolveBuffer::new(
+                    descriptors,
+                    self.size,
+                    self.format,
+                    wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    pool,
+                )
+            })
+        } else {
+            primary
+        };
+        (
+            Some(wgpu::RenderPassColorAttachment {
+                view: self.frame_buffer.view(),
+                resolve_target: Some(resolve.view()),
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Discard,
+                },
+                depth_slice: None,
+            }),
+            reseed,
+        )
+    }
+
+    pub fn reseed(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        descriptors: &Descriptors,
+        image: &wgpu::BindGroup,
+        with_stencil: bool,
+    ) {
+        let pipeline = descriptors.copy_pipeline(self.format, self.sample_count, with_stencil);
+        render_pass.set_pipeline(&pipeline);
+        render_pass.set_bind_group(0, self.globals.bind_group(), &[]);
+        render_pass.set_bind_group(2, image, &[]);
+        render_pass.set_vertex_buffer(0, descriptors.quad.vertices_pos_uv.slice(..));
+        render_pass.set_index_buffer(
+            descriptors.quad.indices.slice(..),
+            wgpu::IndexFormat::Uint32,
+        );
+        render_pass.draw_indexed(0..6, 0, 0..1);
+    }
+
+    fn resolved(&self) -> Option<&ResolveBuffer> {
+        let primary = self.resolve_buffer.as_ref()?;
+        Some(if self.resolved_to_spare.get() {
+            self.spare_resolve_buffer
+                .get()
+                .expect("Resolved into the spare buffer")
+        } else {
+            primary
         })
     }
 
@@ -418,11 +584,7 @@ impl CommandTarget {
         self.ensure_cleared(encoder);
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: self
-                    .resolve_buffer
-                    .as_ref()
-                    .map(|b| b.texture())
-                    .unwrap_or_else(|| self.frame_buffer.texture()),
+                texture: self.color_texture(),
                 mip_level: 0,
                 origin: Default::default(),
                 aspect: Default::default(),
@@ -464,11 +626,7 @@ impl CommandTarget {
         };
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: self
-                    .resolve_buffer
-                    .as_ref()
-                    .map(|b| b.texture())
-                    .unwrap_or_else(|| self.frame_buffer.texture()),
+                texture: self.color_texture(),
                 mip_level: 0,
                 origin,
                 aspect: Default::default(),
@@ -489,15 +647,13 @@ impl CommandTarget {
     }
 
     pub fn color_view(&self) -> &wgpu::TextureView {
-        self.resolve_buffer
-            .as_ref()
+        self.resolved()
             .map(|b| b.view())
             .unwrap_or_else(|| self.frame_buffer.view())
     }
 
     pub fn color_texture(&self) -> &wgpu::Texture {
-        self.resolve_buffer
-            .as_ref()
+        self.resolved()
             .map(|b| b.texture())
             .unwrap_or_else(|| self.frame_buffer.texture())
     }

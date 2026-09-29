@@ -169,6 +169,7 @@ impl Surface {
                                 _ => masks,
                             });
                     crate::backend::count_render_pass(crate::stats::PassKind::Draw);
+                    let (color, reseed) = target.pass_color_attachment(descriptors, texture_pool);
                     let mut render_pass = draw_encoder.scoped_render_pass(
                         format!(
                             "Chunked draw calls {}",
@@ -179,7 +180,7 @@ impl Surface {
                             }
                         ),
                         wgpu::RenderPassDescriptor {
-                            color_attachments: &[target.color_attachments()],
+                            color_attachments: &[color],
                             depth_stencil_attachment: if needs_stencil {
                                 target.stencil_attachment(
                                     descriptors,
@@ -193,6 +194,9 @@ impl Surface {
                             ..Default::default()
                         },
                     );
+                    if let Some(image) = reseed {
+                        target.reseed(&mut render_pass, descriptors, image, needs_stencil);
+                    }
                     render_pass.set_bind_group(0, target.globals().bind_group(), &[]);
                     render_pass.set_bind_group(1, &dynamic_transforms.bind_group, &[]);
                     let mut renderer = CommandRenderer::new(
@@ -261,6 +265,7 @@ impl Surface {
                     assert!(!needs_stencil, "Shader blend mode not implemented in masks");
                     let parent_blend_buffer =
                         target.update_blend_buffer(descriptors, texture_pool, draw_encoder);
+                    target.restore_frame_buffer(descriptors, draw_encoder);
                     run_pixelbender_shader_impl(
                         descriptors,
                         shader,
@@ -386,6 +391,7 @@ impl Surface {
                             });
 
                     crate::backend::count_render_pass(crate::stats::PassKind::Blend);
+                    let (color, reseed) = target.pass_color_attachment(descriptors, texture_pool);
                     let mut render_pass =
                         draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: create_debug_label!(
@@ -398,7 +404,7 @@ impl Surface {
                                 }
                             )
                             .as_deref(),
-                            color_attachments: &[target.color_attachments()],
+                            color_attachments: &[color],
                             depth_stencil_attachment: if needs_stencil {
                                 target.stencil_attachment(
                                     descriptors,
@@ -411,6 +417,9 @@ impl Surface {
                             },
                             ..Default::default()
                         });
+                    if let Some(image) = reseed {
+                        target.reseed(&mut render_pass, descriptors, image, needs_stencil);
+                    }
                     render_pass.set_bind_group(0, target.globals().bind_group(), &[]);
 
                     if needs_stencil {
@@ -455,6 +464,7 @@ impl Surface {
 
         // If nothing happened, ensure it's cleared so we don't operate on garbage data
         target.ensure_cleared(draw_encoder);
+        target.finish(descriptors, draw_encoder);
 
         target
     }

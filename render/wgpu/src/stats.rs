@@ -33,10 +33,28 @@ impl Gauge {
 #[cfg(feature = "stats")]
 pub static SEQUENTIAL_DRAWS: AtomicBool = AtomicBool::new(false);
 
+/// Keeps multisampled pixels from one render pass to the next rather than
+/// resolving and reseeding them, which depends on where passes split, so that
+/// `SEQUENTIAL_DRAWS` renders the same image as batching.
+#[cfg(feature = "stats")]
+pub static KEEP_SAMPLES: AtomicBool = AtomicBool::new(false);
+
 #[cfg(feature = "stats")]
 #[inline]
 pub fn sequential_draws() -> bool {
     SEQUENTIAL_DRAWS.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "stats")]
+#[inline]
+pub fn keep_samples() -> bool {
+    KEEP_SAMPLES.load(Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "stats"))]
+#[inline]
+pub fn keep_samples() -> bool {
+    false
 }
 
 #[cfg(not(feature = "stats"))]

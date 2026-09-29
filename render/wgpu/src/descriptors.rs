@@ -21,7 +21,7 @@ pub struct Descriptors {
     pub bitmap_samplers: BitmapSamplers,
     pub bind_layouts: BindLayouts,
     pub quad: Quad,
-    copy_pipeline: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), wgpu::RenderPipeline>>,
+    copy_pipeline: Mutex<FnvHashMap<(u32, wgpu::TextureFormat, bool), wgpu::RenderPipeline>>,
     pub shaders: Shaders,
     pipelines: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), Arc<Pipelines>>>,
     pub filters: Filters,
@@ -79,17 +79,20 @@ impl Descriptors {
         }
     }
 
+    /// `with_stencil` makes it usable in a pass with a stencil attachment,
+    /// which it leaves alone.
     pub fn copy_pipeline(
         &self,
         format: wgpu::TextureFormat,
         msaa_sample_count: u32,
+        with_stencil: bool,
     ) -> wgpu::RenderPipeline {
         let mut pipelines = self
             .copy_pipeline
             .lock()
             .expect("Pipelines should not be already locked");
         pipelines
-            .entry((msaa_sample_count, format))
+            .entry((msaa_sample_count, format, with_stencil))
             .or_insert_with(|| {
                 let copy_texture_pipeline_layout =
                     &self
@@ -134,7 +137,18 @@ impl Descriptors {
                             unclipped_depth: false,
                             conservative: false,
                         },
-                        depth_stencil: None,
+                        depth_stencil: with_stencil.then(|| wgpu::DepthStencilState {
+                            format: wgpu::TextureFormat::Stencil8,
+                            depth_write_enabled: Some(false),
+                            depth_compare: Some(wgpu::CompareFunction::Always),
+                            stencil: wgpu::StencilState {
+                                front: wgpu::StencilFaceState::IGNORE,
+                                back: wgpu::StencilFaceState::IGNORE,
+                                read_mask: 0,
+                                write_mask: 0,
+                            },
+                            bias: Default::default(),
+                        }),
                         multisample: wgpu::MultisampleState {
                             count: msaa_sample_count,
                             mask: !0,
