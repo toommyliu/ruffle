@@ -3,6 +3,7 @@ use crate::layouts::BindLayouts;
 use crate::shaders::Shaders;
 use crate::{MaskState, PosColorVertex, PosUvVertex, PosVertex};
 use enum_map::{EnumMap, enum_map};
+use std::sync::OnceLock;
 use wgpu::{BlendState, PrimitiveTopology, vertex_attr_array};
 
 pub const VERTEX_BUFFERS_DESCRIPTION_POS: [Option<wgpu::VertexBufferLayout>; 1] =
@@ -36,8 +37,17 @@ pub const VERTEX_BUFFERS_DESCRIPTION_COLOR: [Option<wgpu::VertexBufferLayout>; 1
 
 #[derive(Debug)]
 pub struct ShapePipeline {
-    pub pipelines: EnumMap<MaskState, wgpu::RenderPipeline>,
-    stencilless: wgpu::RenderPipeline,
+    name: String,
+    device: wgpu::Device,
+    layout: wgpu::PipelineLayout,
+    shader: wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    msaa_sample_count: u32,
+    vertex_buffers: &'static [Option<wgpu::VertexBufferLayout<'static>>],
+    blend: BlendState,
+    primitive_topology: PrimitiveTopology,
+    pipelines: EnumMap<MaskState, OnceLock<wgpu::RenderPipeline>>,
+    stencilless: OnceLock<wgpu::RenderPipeline>,
 }
 
 #[derive(Debug)]
@@ -70,24 +80,83 @@ struct MultiplyPipelines {
 
 impl ShapePipeline {
     pub fn pipeline_for(&self, mask_state: MaskState) -> &wgpu::RenderPipeline {
-        &self.pipelines[mask_state]
+        self.pipelines[mask_state].get_or_init(|| self.create(Some(mask_state)))
     }
 
     pub fn stencilless_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.stencilless
+        self.stencilless.get_or_init(|| self.create(None))
     }
 
-    /// Builds of a nested `EnumMap` that maps a `MaskState` to
-    /// a `RenderPipeline`. The provided callback is used to construct the `RenderPipeline`
-    /// for each possible `MaskState`.
-    fn build(
-        stencilless: wgpu::RenderPipeline,
-        f: impl FnMut(MaskState) -> wgpu::RenderPipeline,
-    ) -> Self {
-        ShapePipeline {
-            pipelines: EnumMap::from_fn(f),
-            stencilless,
-        }
+    fn create(&self, mask_state: Option<MaskState>) -> wgpu::RenderPipeline {
+        let (depth_stencil, write_mask) = match mask_state {
+            None => (None, wgpu::ColorWrites::ALL),
+            Some(mask_state) => {
+                let (face, write_mask) = mask_stencil_state(mask_state);
+                let depth_stencil = wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Stencil8,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: wgpu::StencilState {
+                        front: face,
+                        back: face,
+                        read_mask: !0,
+                        write_mask: !0,
+                    },
+                    bias: Default::default(),
+                };
+                (Some(depth_stencil), write_mask)
+            }
+        };
+        self.device
+            .create_render_pipeline(&create_pipeline_descriptor(
+                create_debug_label!("{} pipeline {:?}", self.name, mask_state).as_deref(),
+                &self.shader,
+                &self.shader,
+                &self.layout,
+                depth_stencil,
+                &[Some(wgpu::ColorTargetState {
+                    format: self.format,
+                    blend: Some(self.blend),
+                    write_mask,
+                })],
+                self.vertex_buffers,
+                self.msaa_sample_count,
+                &[],
+                self.primitive_topology,
+            ))
+    }
+}
+
+fn mask_stencil_state(mask_state: MaskState) -> (wgpu::StencilFaceState, wgpu::ColorWrites) {
+    let face = |compare, pass_op| wgpu::StencilFaceState {
+        compare,
+        fail_op: wgpu::StencilOperation::Keep,
+        depth_fail_op: wgpu::StencilOperation::Keep,
+        pass_op,
+    };
+    match mask_state {
+        MaskState::NoMask => (
+            face(wgpu::CompareFunction::Always, wgpu::StencilOperation::Keep),
+            wgpu::ColorWrites::ALL,
+        ),
+        MaskState::DrawMaskStencil => (
+            face(
+                wgpu::CompareFunction::Equal,
+                wgpu::StencilOperation::IncrementClamp,
+            ),
+            wgpu::ColorWrites::empty(),
+        ),
+        MaskState::DrawMaskedContent => (
+            face(wgpu::CompareFunction::Equal, wgpu::StencilOperation::Keep),
+            wgpu::ColorWrites::ALL,
+        ),
+        MaskState::ClearMaskStencil => (
+            face(
+                wgpu::CompareFunction::Equal,
+                wgpu::StencilOperation::DecrementClamp,
+            ),
+            wgpu::ColorWrites::empty(),
+        ),
     }
 }
 
@@ -465,107 +534,29 @@ fn create_shape_pipeline(
     format: wgpu::TextureFormat,
     shader: &wgpu::ShaderModule,
     msaa_sample_count: u32,
-    vertex_buffers_layout: &[Option<wgpu::VertexBufferLayout<'_>>],
+    vertex_buffers: &'static [Option<wgpu::VertexBufferLayout<'static>>],
     bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
     blend: BlendState,
     immediate_size: u32,
     primitive_topology: PrimitiveTopology,
 ) -> ShapePipeline {
     let pipeline_layout_label = create_debug_label!("{} shape pipeline layout", name);
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: pipeline_layout_label.as_deref(),
         bind_group_layouts,
         immediate_size,
     });
-
-    let mask_render_state = |mask_name, stencil_state, write_mask| {
-        device.create_render_pipeline(&create_pipeline_descriptor(
-            create_debug_label!("{} pipeline {}", name, mask_name).as_deref(),
-            shader,
-            shader,
-            &pipeline_layout,
-            Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Stencil8,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: wgpu::StencilState {
-                    front: stencil_state,
-                    back: stencil_state,
-                    read_mask: !0,
-                    write_mask: !0,
-                },
-                bias: Default::default(),
-            }),
-            &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(blend),
-                write_mask,
-            })],
-            vertex_buffers_layout,
-            msaa_sample_count,
-            &[],
-            primitive_topology,
-        ))
-    };
-
-    ShapePipeline::build(
-        device.create_render_pipeline(&create_pipeline_descriptor(
-            create_debug_label!("{} stencilless pipeline", name).as_deref(),
-            shader,
-            shader,
-            &pipeline_layout,
-            None,
-            &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(blend),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            vertex_buffers_layout,
-            msaa_sample_count,
-            &[],
-            primitive_topology,
-        )),
-        |mask_state| match mask_state {
-            MaskState::NoMask => mask_render_state(
-                "no mask",
-                wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Always,
-                    fail_op: wgpu::StencilOperation::Keep,
-                    depth_fail_op: wgpu::StencilOperation::Keep,
-                    pass_op: wgpu::StencilOperation::Keep,
-                },
-                wgpu::ColorWrites::ALL,
-            ),
-            MaskState::DrawMaskStencil => mask_render_state(
-                "draw mask stencil",
-                wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Equal,
-                    fail_op: wgpu::StencilOperation::Keep,
-                    depth_fail_op: wgpu::StencilOperation::Keep,
-                    pass_op: wgpu::StencilOperation::IncrementClamp,
-                },
-                wgpu::ColorWrites::empty(),
-            ),
-            MaskState::DrawMaskedContent => mask_render_state(
-                "draw masked content",
-                wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Equal,
-                    fail_op: wgpu::StencilOperation::Keep,
-                    depth_fail_op: wgpu::StencilOperation::Keep,
-                    pass_op: wgpu::StencilOperation::Keep,
-                },
-                wgpu::ColorWrites::ALL,
-            ),
-            MaskState::ClearMaskStencil => mask_render_state(
-                "clear mask stencil",
-                wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Equal,
-                    fail_op: wgpu::StencilOperation::Keep,
-                    depth_fail_op: wgpu::StencilOperation::Keep,
-                    pass_op: wgpu::StencilOperation::DecrementClamp,
-                },
-                wgpu::ColorWrites::empty(),
-            ),
-        },
-    )
+    ShapePipeline {
+        name: name.to_owned(),
+        device: device.clone(),
+        layout,
+        shader: shader.clone(),
+        format,
+        msaa_sample_count,
+        vertex_buffers,
+        blend,
+        primitive_topology,
+        pipelines: EnumMap::default(),
+        stencilless: OnceLock::new(),
+    }
 }
