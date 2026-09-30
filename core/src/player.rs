@@ -2572,14 +2572,16 @@ impl Player {
         name: &str,
         args: impl IntoIterator<Item = ExternalValue>,
     ) -> ExternalValue {
-        self.mutate_with_update_context(|context| {
+        let result = self.mutate_with_update_context(|context| {
             if let Some(callback) = context.external_interface.get_callback(name) {
                 callback.call(context, name, args)
             } else {
                 tracing::warn!("Calling unknown internal interface: {}", name);
                 ExternalValue::Null
             }
-        })
+        });
+        collect_garbage(&mut self.gc_arena.borrow_mut(), false);
+        result
     }
 
     pub fn spoofed_url(&self) -> Option<&str> {
