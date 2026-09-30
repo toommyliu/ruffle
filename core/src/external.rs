@@ -182,11 +182,7 @@ impl Value {
                 object.into()
             }
             Value::List(values) => Avm1ArrayBuilder::new(activation)
-                .with(
-                    values
-                        .iter()
-                        .map(|value| value.to_owned().into_avm1(activation)),
-                )
+                .with(values.into_iter().map(|value| value.into_avm1(activation)))
                 .into(),
         }
     }
@@ -256,8 +252,8 @@ impl Value {
             }
             Value::List(values) => {
                 let storage = values
-                    .iter()
-                    .map(|value| value.to_owned().into_avm2(context))
+                    .into_iter()
+                    .map(|value| value.into_avm2(context))
                     .collect();
 
                 Avm2ArrayObject::from_storage(context, storage).into()
