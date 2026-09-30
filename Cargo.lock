@@ -5253,6 +5253,7 @@ dependencies = [
  "ruffle_web_common",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "slotmap",
  "thiserror 2.0.18",
  "tracing",

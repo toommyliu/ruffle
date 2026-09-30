@@ -501,12 +501,12 @@ impl RuffleHandle {
         if let Some(context) = CURRENT_CONTEXT.with(|v| *v.borrow()) {
             unsafe {
                 if let Some(callback) = (*context).external_interface.get_callback(name) {
-                    return external_to_js_value(callback.call(&mut *context, name, args));
+                    return external_to_js_value(&callback.call(&mut *context, name, args));
                 }
             }
         }
 
-        self.with_core_mut(|core| external_to_js_value(core.call_internal_interface(name, args)))
+        self.with_core_mut(|core| external_to_js_value(&core.call_internal_interface(name, args)))
             .unwrap_or(JsValue::UNDEFINED)
     }
 

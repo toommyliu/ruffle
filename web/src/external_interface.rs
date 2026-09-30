@@ -1,9 +1,10 @@
 use crate::{CURRENT_CONTEXT, JavascriptPlayer};
-use js_sys::{Array, Object};
+use js_sys::{Array, JSON, Object};
 use ruffle_core::context::UpdateContext;
 use ruffle_core::external::{
     ExternalInterfaceProvider, FsCommandProvider, Value as ExternalValue, Value,
 };
+use serde::ser::{Error as _, Serialize, Serializer};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -35,11 +36,7 @@ impl ExternalInterfaceProvider for JavascriptInterface {
                 std::mem::transmute::<&mut UpdateContext, &mut UpdateContext<'static>>(context)
             } as *mut UpdateContext))
         });
-        let args = args
-            .iter()
-            .cloned()
-            .map(external_to_js_value)
-            .collect::<Vec<_>>();
+        let args = args.iter().map(external_to_js_value).collect::<Vec<_>>();
         let result = if let Ok(result) = call_external_interface(name, args.into_boxed_slice()) {
             js_to_external_value(&result)
         } else {
@@ -99,20 +96,46 @@ pub fn js_to_external_value(js: &JsValue) -> ExternalValue {
     }
 }
 
-pub fn external_to_js_value(external: ExternalValue) -> JsValue {
+struct AsJson<'a>(&'a ExternalValue);
+
+impl Serialize for AsJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Undefined => Err(S::Error::custom("undefined")),
+            Value::Number(value) if !value.is_finite() => Err(S::Error::custom(value)),
+            Value::Null => serializer.serialize_unit(),
+            Value::Bool(value) => serializer.serialize_bool(*value),
+            Value::Number(value) => serializer.serialize_f64(*value),
+            Value::String(value) => serializer.serialize_str(value),
+            Value::Object(object) => {
+                serializer.collect_map(object.iter().map(|(key, value)| (key, AsJson(value))))
+            }
+            Value::List(values) => serializer.collect_seq(values.iter().map(AsJson)),
+        }
+    }
+}
+
+pub fn external_to_js_value(external: &ExternalValue) -> JsValue {
+    if matches!(external, Value::Object(_) | Value::List(_))
+        && let Ok(json) = serde_json::to_string(&AsJson(external))
+        && let Ok(value) = JSON::parse(&json)
+    {
+        return value;
+    }
+    build_js_value(external)
+}
+
+fn build_js_value(external: &ExternalValue) -> JsValue {
     match external {
         Value::Undefined => JsValue::UNDEFINED,
         Value::Null => JsValue::NULL,
-        Value::Bool(value) => JsValue::from_bool(value),
-        Value::Number(value) => JsValue::from_f64(value),
-        Value::String(value) => JsValue::from_str(&value),
+        Value::Bool(value) => JsValue::from_bool(*value),
+        Value::Number(value) => JsValue::from_f64(*value),
+        Value::String(value) => JsValue::from_str(value),
         Value::Object(object) => {
             let entries = Array::new();
             for (key, value) in object {
-                entries.push(&Array::of2(
-                    &JsValue::from_str(&key),
-                    &external_to_js_value(value),
-                ));
+                entries.push(&Array::of2(&JsValue::from_str(key), &build_js_value(value)));
             }
             if let Ok(result) = Object::from_entries(&entries) {
                 result.into()
@@ -123,7 +146,7 @@ pub fn external_to_js_value(external: ExternalValue) -> JsValue {
         Value::List(values) => {
             let array = Array::new();
             for value in values {
-                array.push(&external_to_js_value(value));
+                array.push(&build_js_value(value));
             }
             array.into()
         }
