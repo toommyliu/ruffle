@@ -7,7 +7,10 @@ use crate::dynamic_transforms::DynamicTransforms;
 use crate::mesh::{DrawType, Mesh, as_mesh};
 use crate::surface::Surface;
 use crate::surface::target::CommandTarget;
-use crate::{Descriptors, MaskState, Pipelines, PosUvVertex, Transforms, as_texture};
+use crate::{
+    Descriptors, MaskState, Pipelines, PosColorVertex, PosUvVertex, PosVertex, Transforms,
+    as_texture,
+};
 use ruffle_render::backend::ShapeHandle;
 use ruffle_render::bitmap::{BitmapHandle, PixelRegion, PixelSnapping};
 use ruffle_render::commands::{Command, CommandHandler, CommandList, RenderBlendMode};
@@ -253,16 +256,25 @@ impl<'encoder> CommandRenderer<'encoder> {
         self.set_bind_group(render_pass, bind_group);
     }
 
-    /// `indices` counts indices, not bytes, from the start of `index_buffer`.
-    pub fn draw(
+    /// `vertex_offset` is in bytes and a whole number of `V`s; `indices` count
+    /// indices from the start of `index_buffer`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw<V>(
         &mut self,
         render_pass: &mut wgpu::RenderPass<'encoder>,
-        vertices: wgpu::BufferSlice<'encoder>,
+        vertex_buffer: &'encoder wgpu::Buffer,
+        vertex_offset: wgpu::BufferAddress,
         index_buffer: &'encoder wgpu::Buffer,
         index_format: wgpu::IndexFormat,
         indices: std::ops::Range<u32>,
         instance_index: u32,
     ) {
+        let (vertices, base_vertex) = if self.descriptors.base_vertex {
+            let base_vertex = vertex_offset / size_of::<V>() as wgpu::BufferAddress;
+            (vertex_buffer.slice(..), base_vertex as i32)
+        } else {
+            (vertex_buffer.slice(vertex_offset..), 0)
+        };
         if self.vertex_buffer != Some(vertices) {
             render_pass.set_vertex_buffer(0, vertices);
             self.vertex_buffer = Some(vertices);
@@ -272,7 +284,7 @@ impl<'encoder> CommandRenderer<'encoder> {
             self.index_buffer = Some((index_buffer, index_format));
         }
 
-        render_pass.draw_indexed(indices, 0, instance_index..(instance_index + 1));
+        render_pass.draw_indexed(indices, base_vertex, instance_index..(instance_index + 1));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -299,15 +311,15 @@ impl<'encoder> CommandRenderer<'encoder> {
         );
         self.prep_bitmap(render_pass, &bind.bind_group, blend_mode, render_stage3d);
 
-        let vertex_slice = if let Some(vertex_offset) = vertex_offset {
-            self.dynamic_vertex_buffer.slice(vertex_offset..)
-        } else {
-            self.descriptors.quad.vertices_pos_uv.slice(..)
+        let (vertex_buffer, vertex_offset) = match vertex_offset {
+            Some(vertex_offset) => (self.dynamic_vertex_buffer, vertex_offset),
+            None => (&descriptors.quad.vertices_pos_uv, 0),
         };
 
-        self.draw(
+        self.draw::<PosUvVertex>(
             render_pass,
-            vertex_slice,
+            vertex_buffer,
+            vertex_offset,
             &descriptors.quad.indices,
             wgpu::IndexFormat::Uint32,
             0..6,
@@ -329,9 +341,10 @@ impl<'encoder> CommandRenderer<'encoder> {
             false,
         );
 
-        self.draw(
+        self.draw::<PosUvVertex>(
             render_pass,
-            self.descriptors.quad.vertices_pos_uv.slice(..),
+            &self.descriptors.quad.vertices_pos_uv,
+            0,
             &self.descriptors.quad.indices,
             wgpu::IndexFormat::Uint32,
             0..6,
@@ -375,14 +388,28 @@ impl<'encoder> CommandRenderer<'encoder> {
             let first_index = (draw.indices.start
                 / wgpu::BufferAddress::from(mesh.index_format.byte_size()))
                 as u32;
-            self.draw(
-                render_pass,
-                mesh.vertex_buffer.slice(draw.vertices.clone()),
-                &mesh.index_buffer,
-                mesh.index_format,
-                first_index..first_index + num_indices,
-                instance_index,
-            );
+            let indices = first_index..first_index + num_indices;
+            if let DrawType::Color = draw.draw_type {
+                self.draw::<PosColorVertex>(
+                    render_pass,
+                    &mesh.vertex_buffer,
+                    draw.vertices.start,
+                    &mesh.index_buffer,
+                    mesh.index_format,
+                    indices,
+                    instance_index,
+                );
+            } else {
+                self.draw::<PosUvVertex>(
+                    render_pass,
+                    &mesh.vertex_buffer,
+                    draw.vertices.start,
+                    &mesh.index_buffer,
+                    mesh.index_format,
+                    indices,
+                    instance_index,
+                );
+            }
         }
     }
 
@@ -400,9 +427,10 @@ impl<'encoder> CommandRenderer<'encoder> {
 
         self.prep_alpha_mask(render_pass, bind_group);
 
-        self.draw(
+        self.draw::<PosVertex>(
             render_pass,
-            self.descriptors.quad.vertices_pos.slice(..),
+            &self.descriptors.quad.vertices_pos,
+            0,
             &self.descriptors.quad.indices,
             wgpu::IndexFormat::Uint32,
             0..6,
@@ -417,9 +445,10 @@ impl<'encoder> CommandRenderer<'encoder> {
     pub fn draw_rect(&mut self, render_pass: &mut wgpu::RenderPass<'encoder>, instance_index: u32) {
         self.prep_color(render_pass, DirectBlend::NORMAL);
 
-        self.draw(
+        self.draw::<PosColorVertex>(
             render_pass,
-            self.descriptors.quad.vertices_pos_color.slice(..),
+            &self.descriptors.quad.vertices_pos_color,
+            0,
             &self.descriptors.quad.indices,
             wgpu::IndexFormat::Uint32,
             0..6,
@@ -434,9 +463,10 @@ impl<'encoder> CommandRenderer<'encoder> {
     ) {
         self.prep_lines(render_pass);
 
-        self.draw(
+        self.draw::<PosColorVertex>(
             render_pass,
-            self.descriptors.quad.vertices_pos_color.slice(..),
+            &self.descriptors.quad.vertices_pos_color,
+            0,
             if RECT {
                 &self.descriptors.quad.indices_line_rect
             } else {

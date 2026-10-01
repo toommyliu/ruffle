@@ -11,8 +11,8 @@ use crate::target::{MaybeOwnedBuffer, TextureTarget};
 use crate::target::{RenderTargetFrame, TextureBufferInfo};
 use crate::utils::{BufferDimensions, run_copy_pipeline};
 use crate::{
-    Descriptors, DroppedTextures, Error, QueueSyncHandle, RenderTarget, SwapChainTarget, Texture,
-    as_texture, format_list, get_backend_names,
+    Descriptors, DroppedTextures, Error, PosColorVertex, PosUvVertex, QueueSyncHandle,
+    RenderTarget, SwapChainTarget, Texture, as_texture, format_list, get_backend_names,
 };
 use image::imageops::FilterType;
 use ruffle_render::backend::{
@@ -102,7 +102,7 @@ impl MeshBuffers {
             vertices: BufferArena::new(
                 "Mesh vertices",
                 wgpu::BufferUsages::VERTEX,
-                wgpu::COPY_BUFFER_ALIGNMENT,
+                MESH_VERTEX_ALIGNMENT,
                 4 << 20,
             ),
             indices: BufferArena::new(
@@ -1384,6 +1384,15 @@ pub struct ActiveFrame {
     pub command_encoder: wgpu::CommandEncoder,
     draws_since_flush: u32,
 }
+
+/// A multiple of every mesh vertex's size, so that each draw's vertices start
+/// a whole number of vertices into their buffer.
+const MESH_VERTEX_ALIGNMENT: wgpu::BufferAddress = 60;
+const _: () = assert!(
+    MESH_VERTEX_ALIGNMENT.is_multiple_of(size_of::<PosColorVertex>() as u64)
+        && MESH_VERTEX_ALIGNMENT.is_multiple_of(size_of::<PosUvVertex>() as u64)
+        && MESH_VERTEX_ALIGNMENT.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+);
 
 const OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES: u64 = 60;
 

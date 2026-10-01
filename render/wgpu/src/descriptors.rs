@@ -17,6 +17,9 @@ pub struct Descriptors {
     pub device: wgpu::Device,
     pub limits: wgpu::Limits,
     pub backend: Backend,
+    /// Draws can offset their vertices with `base_vertex` instead of binding
+    /// the vertex buffer at an offset. WebGL 2 can't.
+    pub base_vertex: bool,
     pub queue: wgpu::Queue,
     pub bitmap_samplers: BitmapSamplers,
     pub bind_layouts: BindLayouts,
@@ -50,6 +53,10 @@ impl Descriptors {
         let quad = Quad::new(&device);
         let filters = Filters::new(&device);
         let backend = adapter.get_info().backend;
+        let base_vertex = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::BASE_VERTEX);
         let complex_direct_mode_stride = limits.min_uniform_buffer_offset_alignment.max(16);
         let mut modes = vec![0u32; 6 * complex_direct_mode_stride as usize / 4];
         for mode in 0..6 {
@@ -67,6 +74,7 @@ impl Descriptors {
             device,
             limits,
             backend,
+            base_vertex,
             queue,
             bitmap_samplers,
             bind_layouts,

@@ -33,16 +33,11 @@ impl BufferBuilder {
         &mut self,
         value: &[T],
     ) -> Result<Range<wgpu::BufferAddress>, BufferFull> {
-        let start_pos = if !self.inner.is_empty() {
-            if self.align_mask > 0 {
-                // Pad the internal buffer to match alignment requirements
-                // Pad on creation so that we don't wastefully pad the end of the buffer
-                (self.inner.len() + self.align_mask) & !self.align_mask
-            } else {
-                self.inner.len()
-            }
+        // Pad on creation so that we don't wastefully pad the end of the buffer
+        let start_pos = if self.align_mask > 0 {
+            (self.inner.len() + self.align_mask) & !self.align_mask
         } else {
-            0
+            self.inner.len().next_multiple_of(size_of::<T>())
         };
 
         let slice = bytemuck::cast_slice(value);
@@ -50,9 +45,7 @@ impl BufferBuilder {
             return Err(BufferFull);
         }
 
-        if start_pos > 0 && self.align_mask > 0 {
-            self.inner.resize(start_pos, 0);
-        }
+        self.inner.resize(start_pos, 0);
 
         self.inner.extend_from_slice(slice);
         Ok((start_pos as wgpu::BufferAddress)..(self.inner.len() as wgpu::BufferAddress))
