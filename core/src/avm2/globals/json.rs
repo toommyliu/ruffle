@@ -12,9 +12,10 @@ use crate::avm2::value::Value;
 use crate::string::{AvmString, Units};
 use ruffle_macros::istr;
 use serde::Serialize;
-use serde_json::{Map as JsonObject, Value as JsonValue};
+use serde_json::Value as JsonValue;
+use serde_json::ser::{CompactFormatter, Formatter, PrettyFormatter};
 use std::borrow::Cow;
-use std::ops::Deref;
+use std::io;
 
 fn deserialize_json_inner<'gc>(
     activation: &mut Activation<'_, 'gc>,
@@ -94,18 +95,32 @@ enum Replacer<'gc> {
     PropList(ArrayObject<'gc>),
 }
 
-struct AvmSerializer<'gc> {
+struct AvmSerializer<'gc, F> {
     /// This object stack will be used to detect circular references and return an error instead of a panic.
     obj_stack: Vec<Object<'gc>>,
     replacer: Option<Replacer<'gc>>,
+    formatter: F,
+    out: Vec<u8>,
 }
 
-impl<'gc> AvmSerializer<'gc> {
-    fn new(replacer: Option<Replacer<'gc>>) -> Self {
+impl<'gc, F: Formatter> AvmSerializer<'gc, F> {
+    fn new(replacer: Option<Replacer<'gc>>, formatter: F) -> Self {
         Self {
             obj_stack: Vec::new(),
             replacer,
+            formatter,
+            out: Vec::with_capacity(128),
         }
+    }
+
+    fn write(&mut self, write: impl FnOnce(&mut F, &mut Vec<u8>) -> io::Result<()>) {
+        write(&mut self.formatter, &mut self.out).expect("writing to a Vec cannot fail");
+    }
+
+    fn write_scalar(&mut self, value: impl Serialize) {
+        value
+            .serialize(&mut serde_json::Serializer::new(&mut self.out))
+            .expect("JSON serialization cannot fail");
     }
 
     /// Map a value using a toJSON implementation, and then a replacer function.
@@ -152,43 +167,54 @@ impl<'gc> AvmSerializer<'gc> {
         }
     }
 
-    fn serialize_object(
+    fn write_property(
+        &mut self,
+        activation: &mut Activation<'_, 'gc>,
+        first: &mut bool,
+        key: AvmString<'gc>,
+        value: Value<'gc>,
+    ) -> Result<(), Error<'gc>> {
+        let mapped = self.map_value(activation, || key, value)?;
+        let skip = match mapped {
+            Value::Undefined => true,
+            Value::Object(obj) => obj.as_function_object().is_some(),
+            _ => false,
+        };
+        if skip {
+            return Ok(());
+        }
+        self.write(|f, out| f.begin_object_key(out, *first));
+        *first = false;
+        self.write_scalar(&*key.to_utf8_lossy());
+        self.write(F::end_object_key);
+        self.write(F::begin_object_value);
+        self.write_value(activation, mapped)?;
+        self.write(F::end_object_value);
+        Ok(())
+    }
+
+    fn write_object(
         &mut self,
         activation: &mut Activation<'_, 'gc>,
         obj: Object<'gc>,
-    ) -> Result<JsonValue, Error<'gc>> {
-        fn skip_value<'gc>(value: Value<'gc>) -> bool {
-            match value {
-                Value::Undefined => true,
-                Value::Object(obj) => obj.as_function_object().is_some(),
-                _ => false,
-            }
-        }
-
-        let mut js_obj = JsonObject::new();
-        // If the user supplied a PropList, we use that to find properties on the object.
+    ) -> Result<(), Error<'gc>> {
+        self.write(F::begin_object);
+        let mut first = true;
         if let Some(Replacer::PropList(props)) = self.replacer {
+            let mut written = Vec::new();
             let mut iter = ArrayIter::new(activation, props.into())?;
             while let Some((_, item)) = iter.next(activation)? {
                 let key = item.coerce_to_string(activation)?;
-                let value = Value::from(obj).get_public_property(key, activation)?;
-                let mapped = self.map_value(activation, || key, value)?;
-                if !skip_value(mapped) {
-                    js_obj.insert(
-                        key.to_utf8_lossy().into_owned(),
-                        self.serialize_value(activation, mapped)?,
-                    );
+                if written.contains(&key) {
+                    continue;
                 }
+                written.push(key);
+                let value = Value::from(obj).get_public_property(key, activation)?;
+                self.write_property(activation, &mut first, key, value)?;
             }
         } else {
-            for (name, val) in obj.public_vtable_properties(activation)? {
-                let mapped = self.map_value(activation, || name, val)?;
-                if !skip_value(mapped) {
-                    js_obj.insert(
-                        name.to_utf8_lossy().into_owned(),
-                        self.serialize_value(activation, mapped)?,
-                    );
-                }
+            for (name, value) in obj.public_vtable_properties(activation)? {
+                self.write_property(activation, &mut first, name, value)?;
             }
             for i in 1.. {
                 match obj.get_enumerant_name(i, activation)? {
@@ -196,79 +222,78 @@ impl<'gc> AvmSerializer<'gc> {
                     name_val => {
                         let name = name_val.coerce_to_string(activation)?;
                         let value = obj.get_enumerant_value(i, activation)?;
-                        let mapped = self.map_value(activation, || name, value)?;
-                        if !skip_value(mapped) {
-                            js_obj.insert(
-                                name.to_utf8_lossy().into_owned(),
-                                self.serialize_value(activation, mapped)?,
-                            );
-                        }
+                        self.write_property(activation, &mut first, name, value)?;
                     }
                 }
             }
         }
-        Ok(JsonValue::Object(js_obj))
+        self.write(F::end_object);
+        Ok(())
     }
 
     /// Serializes any object that can be iterated using an ArrayIter (like Array, Vector, etc).
     /// Note that this doesn't actually check if the object passed can be iterated using ArrayIter, it just assumes it can.
-    fn serialize_iterable(
+    fn write_iterable(
         &mut self,
         activation: &mut Activation<'_, 'gc>,
         iterable: Object<'gc>,
-    ) -> Result<JsonValue, Error<'gc>> {
-        let mut js_arr = Vec::new();
+    ) -> Result<(), Error<'gc>> {
+        self.write(F::begin_array);
         let mut iter = ArrayIter::new(activation, iterable)?;
+        let mut first = true;
         while let Some((i, item)) = iter.next(activation)? {
             let mc = activation.gc();
             let mapped =
                 self.map_value(activation, || AvmString::new_utf8(mc, i.to_string()), item)?;
-            js_arr.push(self.serialize_value(activation, mapped)?);
+            self.write(|f, out| f.begin_array_value(out, first));
+            first = false;
+            self.write_value(activation, mapped)?;
+            self.write(F::end_array_value);
         }
-        Ok(JsonValue::Array(js_arr))
+        self.write(F::end_array);
+        Ok(())
     }
 
-    fn serialize_value(
+    fn write_value(
         &mut self,
         activation: &mut Activation<'_, 'gc>,
         value: Value<'gc>,
-    ) -> Result<JsonValue, Error<'gc>> {
-        Ok(match value.normalize() {
-            Value::Null => JsonValue::Null,
-            Value::Undefined => JsonValue::Null,
-            Value::Integer(i) => JsonValue::from(i),
-            Value::Number(n) => JsonValue::from(n),
-            Value::Bool(b) => JsonValue::from(b),
-            Value::String(s) => JsonValue::from(s.to_utf8_lossy().deref()),
+    ) -> Result<(), Error<'gc>> {
+        match value.normalize() {
+            Value::Null | Value::Undefined => self.write_scalar(()),
+            Value::Integer(i) => self.write_scalar(i),
+            Value::Number(n) => self.write_scalar(n),
+            Value::Bool(b) => self.write_scalar(b),
+            Value::String(s) => self.write_scalar(&*s.to_utf8_lossy()),
             Value::Object(obj) => {
                 if self.obj_stack.contains(&obj) {
                     return Err(make_error_1129(activation));
                 }
                 self.obj_stack.push(obj);
-                let value = if obj.as_function_object().is_some() {
-                    JsonValue::Null
+                if obj.as_function_object().is_some() {
+                    self.write_scalar(());
                 } else if obj.as_array_object().is_some() || obj.as_vector_object().is_some() {
-                    self.serialize_iterable(activation, obj)?
+                    self.write_iterable(activation, obj)?;
                 } else {
-                    self.serialize_object(activation, obj)?
-                };
+                    self.write_object(activation, obj)?;
+                }
                 self.obj_stack
                     .pop()
                     .expect("Stack underflow during JSON serialization");
-                value
             }
-        })
+        }
+        Ok(())
     }
 
-    /// Same thing as serialize_value, but maps the value before calling it.
     fn serialize(
-        &mut self,
+        mut self,
         activation: &mut Activation<'_, 'gc>,
         value: Value<'gc>,
-    ) -> Result<JsonValue, Error<'gc>> {
+    ) -> Result<Vec<u8>, Error<'gc>> {
         let empty = istr!("");
         let mapped = self.map_value(activation, || empty, value)?;
-        self.serialize_value(activation, mapped)
+        self.write_value(activation, mapped)?;
+        Ok(self.out)
     }
 }
 
@@ -344,18 +369,10 @@ pub fn stringify<'gc>(
         None
     };
 
-    let mut serializer = AvmSerializer::new(replacer);
-    let json = serializer.serialize(activation, val)?;
     let result = match indent {
-        Some(indent) => {
-            let mut result = Vec::with_capacity(128);
-            let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent);
-            let mut serializer = serde_json::Serializer::with_formatter(&mut result, formatter);
-            json.serialize(&mut serializer)
-                .expect("JSON serialization cannot fail");
-            result
-        }
-        None => serde_json::to_vec(&json).expect("JSON serialization cannot fail"),
+        Some(indent) => AvmSerializer::new(replacer, PrettyFormatter::with_indent(&indent))
+            .serialize(activation, val)?,
+        None => AvmSerializer::new(replacer, CompactFormatter).serialize(activation, val)?,
     };
     Ok(AvmString::new_utf8_bytes(activation.gc(), &result).into())
 }

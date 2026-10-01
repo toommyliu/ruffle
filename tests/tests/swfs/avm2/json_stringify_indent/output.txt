@@ -1,0 +1,117 @@
+[
+   1,
+   "s",
+   null,
+   true,
+   [],
+   {},
+   [
+      []
+   ],
+   [
+      {}
+   ],
+   {
+      "a": []
+   },
+   {
+      "b": {}
+   },
+   {
+      "c": [
+         1,
+         {
+            "d": 2.5
+         }
+      ]
+   }
+]
+[
+	1,
+	"s",
+	null,
+	true,
+	[],
+	{},
+	[
+		[]
+	],
+	[
+		{}
+	],
+	{
+		"a": []
+	},
+	{
+		"b": {}
+	},
+	{
+		"c": [
+			1,
+			{
+				"d": 2.5
+			}
+		]
+	}
+]
+[
+abcdefghij1,
+abcdefghij"s",
+abcdefghijnull,
+abcdefghijtrue,
+abcdefghij[],
+abcdefghij{},
+abcdefghij[
+abcdefghijabcdefghij[]
+abcdefghij],
+abcdefghij[
+abcdefghijabcdefghij{}
+abcdefghij],
+abcdefghij{
+abcdefghijabcdefghij"a": []
+abcdefghij},
+abcdefghij{
+abcdefghijabcdefghij"b": {}
+abcdefghij},
+abcdefghij{
+abcdefghijabcdefghij"c": [
+abcdefghijabcdefghijabcdefghij1,
+abcdefghijabcdefghijabcdefghij{
+abcdefghijabcdefghijabcdefghijabcdefghij"d": 2.5
+abcdefghijabcdefghijabcdefghij}
+abcdefghijabcdefghij]
+abcdefghij}
+]
+[
+          1,
+          "s",
+          null,
+          true,
+          [],
+          {},
+          [
+                    []
+          ],
+          [
+                    {}
+          ],
+          {
+                    "a": []
+          },
+          {
+                    "b": {}
+          },
+          {
+                    "c": [
+                              1,
+                              {
+                                        "d": 2.5
+                              }
+                    ]
+          }
+]
+[1,"s",null,true,[],{},[[]],[{}],{"a":[]},{"b":{}},{"c":[1,{"d":2.5}]}]
+{
+ "a": 1,
+ "b": 2
+}
