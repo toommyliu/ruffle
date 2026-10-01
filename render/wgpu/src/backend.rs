@@ -6,6 +6,7 @@ use crate::filters::FilterSource;
 use crate::mesh::{CommonGradient, Mesh, PendingDraw};
 use crate::mesh_arena::BufferArena;
 use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
+use crate::surface::target::CommandTarget;
 use crate::surface::{LayerRef, Surface};
 use crate::target::{MaybeOwnedBuffer, TextureTarget};
 use crate::target::{RenderTargetFrame, TextureBufferInfo};
@@ -550,27 +551,63 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             &mut self.offscreen_texture_pool,
         );
         atlas.ensure_cleared(&mut self.active_frame.command_encoder);
+        let part = |point: (u32, u32), cache: &Texture| FilterSource {
+            texture: atlas.color_texture(),
+            view: atlas.color_view(),
+            point,
+            size: (cache.texture.width(), cache.texture.height()),
+            clamp_to_rect: true,
+        };
+
+        let (blurred, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
+            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if self.descriptors.filters.blur.is_single_pass(filter))
+        });
+        if !blurred.is_empty() {
+            let target = CommandTarget::new(
+                &self.descriptors,
+                &mut self.offscreen_texture_pool,
+                atlas.color_texture().size(),
+                atlas.color_texture().format(),
+                1,
+                RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
+                &mut self.active_frame.command_encoder,
+            );
+            let blurs: Vec<_> = blurred
+                .iter()
+                .map(|(entry, point)| {
+                    let Filter::BlurFilter(filter) = &entry.filters[0] else {
+                        unreachable!()
+                    };
+                    (part(*point, as_texture(&entry.handle)), filter)
+                })
+                .collect();
+            self.descriptors.filters.blur.apply_single_pass_in_place(
+                &self.descriptors,
+                &mut self
+                    .profiler
+                    .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
+                &target,
+                &blurs,
+            );
+            for (entry, point) in &blurred {
+                copy_part(
+                    &mut self.active_frame.command_encoder,
+                    target.color_texture(),
+                    *point,
+                    as_texture(&entry.handle),
+                );
+            }
+            self.active_frame.maybe_flush(&self.descriptors);
+        }
+
         for (entry, point) in page {
             let texture = as_texture(&entry.handle);
-            let size = (texture.texture.width(), texture.texture.height());
             if entry.filters.is_empty() {
-                self.active_frame.command_encoder.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: atlas.color_texture(),
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: point.0,
-                            y: point.1,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    texture.texture.as_image_copy(),
-                    wgpu::Extent3d {
-                        width: size.0,
-                        height: size.1,
-                        depth_or_array_layers: 1,
-                    },
+                copy_part(
+                    &mut self.active_frame.command_encoder,
+                    atlas.color_texture(),
+                    point,
+                    texture,
                 );
             } else {
                 filter_into_cache(
@@ -580,13 +617,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                         .scope("Filters", &mut self.active_frame.command_encoder),
                     &mut self.offscreen_texture_pool,
                     &mut self.active_frame.staging_belt,
-                    FilterSource {
-                        texture: atlas.color_texture(),
-                        view: atlas.color_view(),
-                        point,
-                        size,
-                        clamp_to_rect: true,
-                    },
+                    part(point, texture),
                     entry.filters,
                     texture,
                 );
@@ -693,6 +724,28 @@ fn offset_commands(commands: &mut CommandList, x: swf::Twips, y: swf::Twips) {
             | Command::PopMask => {}
         }
     }
+}
+
+fn copy_part(
+    encoder: &mut wgpu::CommandEncoder,
+    from: &wgpu::Texture,
+    point: (u32, u32),
+    cache: &Texture,
+) {
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: from,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: point.0,
+                y: point.1,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        cache.texture.as_image_copy(),
+        cache.texture.size(),
+    );
 }
 
 fn filter_into_cache(
