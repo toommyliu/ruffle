@@ -10,7 +10,6 @@ use crate::mesh::Mesh;
 use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
 use crate::surface::commands::{Chunk, CommandRenderer, DrawCommand, chunk_blends};
 use crate::utils::run_copy_pipeline;
-use crate::utils::supported_sample_count;
 use crate::{Descriptors, MaskState, Pipelines};
 use ruffle_render::bitmap::PixelRegion;
 use ruffle_render::commands::CommandList;
@@ -49,11 +48,8 @@ impl Surface {
             depth_or_array_layers: 1,
         };
 
-        let sample_count = supported_sample_count(
-            &descriptors.adapter,
-            quality.sample_count(),
-            frame_buffer_format,
-        );
+        let sample_count =
+            descriptors.supported_sample_count(quality.sample_count(), frame_buffer_format);
         let pipelines = descriptors.pipelines(sample_count, frame_buffer_format);
         Self {
             size,

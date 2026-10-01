@@ -180,22 +180,6 @@ pub fn buffer_to_image(
     })
 }
 
-pub fn supported_sample_count(
-    adapter: &wgpu::Adapter,
-    mut sample_count: u32,
-    format: wgpu::TextureFormat,
-) -> u32 {
-    let features = adapter.get_texture_format_features(format).flags;
-
-    // Keep halving the sample count until we get one that's supported - or 1 (no multisampling)
-    // It's not guaranteed that supporting 4x means supporting 2x, so there's no "max" option
-    // And it's probably safer to round down than up, given it's a performance setting.
-    while sample_count > 1 && !features.sample_count_supported(sample_count) {
-        sample_count /= 2;
-    }
-    sample_count
-}
-
 pub fn run_copy_pipeline(
     descriptors: &Descriptors,
     format: wgpu::TextureFormat,

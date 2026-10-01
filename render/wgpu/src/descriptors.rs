@@ -24,6 +24,7 @@ pub struct Descriptors {
     copy_pipeline: Mutex<FnvHashMap<(u32, wgpu::TextureFormat, bool), wgpu::RenderPipeline>>,
     pub shaders: Shaders,
     pipelines: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), Arc<Pipelines>>>,
+    format_features: Mutex<FnvHashMap<wgpu::TextureFormat, wgpu::TextureFormatFeatureFlags>>,
     pub filters: Filters,
     pub complex_direct_modes: wgpu::Buffer,
     pub complex_direct_mode_stride: u32,
@@ -73,6 +74,7 @@ impl Descriptors {
             copy_pipeline: Default::default(),
             shaders,
             pipelines: Default::default(),
+            format_features: Default::default(),
             filters,
             complex_direct_modes,
             complex_direct_mode_stride,
@@ -159,6 +161,29 @@ impl Descriptors {
                     })
             })
             .clone()
+    }
+
+    /// On the web, asking the adapter for a format's features reads every
+    /// feature it supports from JavaScript, one call each.
+    pub fn supported_sample_count(
+        &self,
+        mut sample_count: u32,
+        format: wgpu::TextureFormat,
+    ) -> u32 {
+        let features = *self
+            .format_features
+            .lock()
+            .expect("Format features should not be already locked")
+            .entry(format)
+            .or_insert_with(|| self.adapter.get_texture_format_features(format).flags);
+
+        // Keep halving the sample count until we get one that's supported - or 1 (no multisampling)
+        // It's not guaranteed that supporting 4x means supporting 2x, so there's no "max" option
+        // And it's probably safer to round down than up, given it's a performance setting.
+        while sample_count > 1 && !features.sample_count_supported(sample_count) {
+            sample_count /= 2;
+        }
+        sample_count
     }
 
     pub fn pipelines(&self, msaa_sample_count: u32, format: wgpu::TextureFormat) -> Arc<Pipelines> {

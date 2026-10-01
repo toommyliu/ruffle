@@ -20,7 +20,6 @@ use wgpu::{CommandEncoder, Extent3d, RenderPass};
 use crate::Texture;
 use crate::context3d::current_pipeline::{AGAL_FLOATS_PER_REGISTER, BoundTextureData, IntoWgpu};
 use crate::descriptors::Descriptors;
-use crate::utils::supported_sample_count;
 
 use std::num::NonZeroU64;
 use std::rc::Rc;
@@ -541,8 +540,9 @@ impl Context3D for WgpuContext3D {
                     // Round down to nearest power of 2
                     sample_count = next_pot / 2;
                 }
-                sample_count =
-                    supported_sample_count(&self.descriptors.adapter, sample_count, format);
+                sample_count = self
+                    .descriptors
+                    .supported_sample_count(sample_count, format);
 
                 let texture_label = create_debug_label!("Render target texture");
 
