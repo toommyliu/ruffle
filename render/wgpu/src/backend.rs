@@ -559,45 +559,47 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             clamp_to_rect: true,
         };
 
-        let (blurred, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
-            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if self.descriptors.filters.blur.is_single_pass(filter))
+        let blur = &self.descriptors.filters.blur;
+        let (single, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
+            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if blur.is_single_pass(filter))
         });
-        if !blurred.is_empty() {
-            let target = CommandTarget::new(
-                &self.descriptors,
-                &mut self.offscreen_texture_pool,
+        let (double, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
+            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if blur.is_two_pass(filter))
+        });
+        let new_target = |this: &mut Self| {
+            CommandTarget::new(
+                &this.descriptors,
+                &mut this.offscreen_texture_pool,
                 atlas.color_texture().size(),
                 atlas.color_texture().format(),
                 1,
                 RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
-                &mut self.active_frame.command_encoder,
-            );
-            let blurs: Vec<_> = blurred
-                .iter()
-                .map(|(entry, point)| {
-                    let Filter::BlurFilter(filter) = &entry.filters[0] else {
-                        unreachable!()
-                    };
-                    (part(*point, as_texture(&entry.handle)), filter)
-                })
-                .collect();
+                &mut this.active_frame.command_encoder,
+            )
+        };
+        if !single.is_empty() {
+            let target = new_target(self);
             self.descriptors.filters.blur.apply_single_pass_in_place(
                 &self.descriptors,
                 &mut self
                     .profiler
                     .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
                 &target,
-                &blurs,
+                &atlas_blurs(&atlas, &single),
             );
-            for (entry, point) in &blurred {
-                copy_part(
-                    &mut self.active_frame.command_encoder,
-                    target.color_texture(),
-                    *point,
-                    as_texture(&entry.handle),
-                );
-            }
-            self.active_frame.maybe_flush(&self.descriptors);
+            self.copy_parts(target.color_texture(), &single);
+        }
+        if !double.is_empty() {
+            let targets = [new_target(self), new_target(self)];
+            self.descriptors.filters.blur.apply_two_pass_in_place(
+                &self.descriptors,
+                &mut self
+                    .profiler
+                    .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
+                [&targets[0], &targets[1]],
+                &atlas_blurs(&atlas, &double),
+            );
+            self.copy_parts(targets[1].color_texture(), &double);
         }
 
         for (entry, point) in page {
@@ -624,6 +626,18 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             }
             self.active_frame.maybe_flush(&self.descriptors);
         }
+    }
+
+    fn copy_parts(&mut self, from: &wgpu::Texture, entries: &[(BitmapCacheEntry, (u32, u32))]) {
+        for (entry, point) in entries {
+            copy_part(
+                &mut self.active_frame.command_encoder,
+                from,
+                *point,
+                as_texture(&entry.handle),
+            );
+        }
+        self.active_frame.maybe_flush(&self.descriptors);
     }
 }
 
@@ -724,6 +738,29 @@ fn offset_commands(commands: &mut CommandList, x: swf::Twips, y: swf::Twips) {
             | Command::PopMask => {}
         }
     }
+}
+
+fn atlas_blurs<'a>(
+    atlas: &'a CommandTarget,
+    entries: &'a [(BitmapCacheEntry, (u32, u32))],
+) -> Vec<(FilterSource<'a>, &'a swf::BlurFilter)> {
+    entries
+        .iter()
+        .map(|(entry, point)| {
+            let Filter::BlurFilter(filter) = &entry.filters[0] else {
+                unreachable!("Only blurred entries")
+            };
+            let texture = &as_texture(&entry.handle).texture;
+            let source = FilterSource {
+                texture: atlas.color_texture(),
+                view: atlas.color_view(),
+                point: *point,
+                size: (texture.width(), texture.height()),
+                clamp_to_rect: true,
+            };
+            (source, filter)
+        })
+        .collect()
 }
 
 fn copy_part(

@@ -187,7 +187,7 @@ impl BlurFilter {
                     visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: wgpu::BufferSize::new(uniform_size),
                     },
                     count: None,
@@ -637,6 +637,156 @@ impl BlurFilter {
         }
     }
 
+    /// Whether `apply_two_pass_in_place` can blur with `filter`.
+    pub fn is_two_pass(&self, filter: &BlurFilterArgs) -> bool {
+        single_pass_kernels(filter).is_none()
+            && Kernel::new(filter.blur_x.to_f32()).is_some()
+            && Kernel::new(filter.blur_y.to_f32()).is_some()
+    }
+
+    /// Blurs parts of one texture, each with a filter that `is_two_pass`, a
+    /// direction at a time for all of them: from the parts into `targets[0]`,
+    /// then back and forth between the two targets, which must be the size of
+    /// the source. The results end up in the same places in `targets[1]`.
+    pub fn apply_two_pass_in_place(
+        &self,
+        descriptors: &Descriptors,
+        draw_encoder: &mut wgpu::CommandEncoder,
+        targets: [&CommandTarget; 2],
+        blurs: &[(FilterSource, &BlurFilterArgs)],
+    ) {
+        let Some((first, _)) = blurs.first() else {
+            return;
+        };
+        let width = first.texture.width() as f32;
+        let height = first.texture.height() as f32;
+        let steps = blurs
+            .iter()
+            .map(|(_, filter)| filter.num_passes() as usize * 2)
+            .max()
+            .unwrap_or_default();
+        let size = std::mem::size_of::<BlurUniform>();
+        let stride =
+            size.next_multiple_of(descriptors.limits.min_uniform_buffer_offset_alignment as usize);
+        let mut uniforms = vec![0; stride * steps * blurs.len()];
+        let mut vertices = Vec::with_capacity(blurs.len());
+        for (i, (source, filter)) in blurs.iter().enumerate() {
+            let kernels = [
+                Kernel::new(filter.blur_x.to_f32()).expect("Blurs horizontally"),
+                Kernel::new(filter.blur_y.to_f32()).expect("Blurs vertically"),
+            ];
+            for step in 0..filter.num_passes() as usize * 2 {
+                let kernel = &kernels[step % 2];
+                let uniform = BlurUniform {
+                    direction: if step % 2 == 0 {
+                        [1.0 / width, 0.0]
+                    } else {
+                        [0.0, 1.0 / height]
+                    },
+                    full_size: kernel.full_size,
+                    m: kernel.m,
+                    m2: kernel.m * 2.0,
+                    first_weight: kernel.first_weight,
+                    last_offset: kernel.last_offset,
+                    last_weight: kernel.last_weight,
+                    uv_bounds: source.uv_bounds(),
+                };
+                let offset = (step * blurs.len() + i) * stride;
+                uniforms[offset..offset + size].copy_from_slice(bytemuck::bytes_of(&uniform));
+            }
+            vertices.push(source.vertices());
+        }
+        let uniforms = descriptors
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: create_debug_label!("Blurs").as_deref(),
+                contents: &uniforms,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let vertices = descriptors
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: create_debug_label!("Blur parts").as_deref(),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let vertices_size = std::mem::size_of::<[FilterVertex; 4]>() as u64;
+        let pipeline = self.pipeline(descriptors, first.texture.sample_count());
+
+        for step in 0..steps {
+            let source = if step == 0 {
+                first.view
+            } else {
+                targets[(step - 1) % 2].color_view()
+            };
+            let bind_group = descriptors
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: create_debug_label!("Blurs group").as_deref(),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(
+                                descriptors.bitmap_samplers.get_sampler(false, true),
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &uniforms,
+                                offset: 0,
+                                size: wgpu::BufferSize::new(size as u64),
+                            }),
+                        },
+                    ],
+                });
+
+            crate::backend::count_render_pass(crate::stats::PassKind::Filter);
+            let mut render_pass = draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: create_debug_label!("Blur filters").as_deref(),
+                color_attachments: &[targets[step % 2].color_attachments()],
+                ..Default::default()
+            });
+            render_pass.set_pipeline(pipeline);
+            render_pass.set_index_buffer(
+                descriptors.quad.indices.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            if descriptors.base_vertex {
+                render_pass.set_vertex_buffer(0, vertices.slice(..));
+            }
+            for (i, (source, filter)) in blurs.iter().enumerate() {
+                if step >= filter.num_passes() as usize * 2 {
+                    continue;
+                }
+                render_pass.set_viewport(
+                    source.point.0 as f32,
+                    source.point.1 as f32,
+                    source.size.0 as f32,
+                    source.size.1 as f32,
+                    0.0,
+                    1.0,
+                );
+                render_pass.set_bind_group(
+                    0,
+                    &bind_group,
+                    &[((step * blurs.len() + i) * stride) as u32],
+                );
+                if descriptors.base_vertex {
+                    render_pass.draw_indexed(0..6, 4 * i as i32, 0..1);
+                } else {
+                    render_pass.set_vertex_buffer(0, vertices.slice(i as u64 * vertices_size..));
+                    render_pass.draw_indexed(0..6, 0, 0..1);
+                }
+            }
+        }
+    }
+
     fn render_with_uniform_buffers(
         &self,
         descriptors: &Descriptors,
@@ -677,7 +827,7 @@ impl BlurFilter {
         });
         render_pass.set_pipeline(pipeline);
 
-        render_pass.set_bind_group(0, &filter_group, &[]);
+        render_pass.set_bind_group(0, &filter_group, &[0]);
 
         render_pass.set_vertex_buffer(0, vertices);
         render_pass.set_index_buffer(
