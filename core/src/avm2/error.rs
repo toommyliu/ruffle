@@ -1087,6 +1087,7 @@ pub fn make_error_2027<'gc>(
     ))
 }
 
+make_error_fn!(make_error_2029, 2029, io_error);
 make_error_fn!(make_error_2030, 2030, eof_error);
 make_error_fn!(make_error_2037, 2037, error);
 make_error_fn!(make_error_2058, 2058, io_error);

@@ -1,0 +1,13 @@
+num_frames = 62
+
+# The output.txt is obtained from Flash Player 32 (PPAPI) for macOS.
+
+[[compilers]]
+type = "Asc"
+target = "test.swf"
+class = "Test"
+scripts = ["Test.as"]
+swf_version = 43
+
+[player_options]
+mode = "Release"

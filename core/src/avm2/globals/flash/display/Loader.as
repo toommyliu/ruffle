@@ -38,9 +38,7 @@ package flash.display {
             this.unload();
         }
 
-        public function close():void {
-            stub_method("flash.display.Loader", "close");
-        }
+        public native function close():void;
 
         override public function addChild(child:DisplayObject):DisplayObject {
             throw new IllegalOperationError("Error #2069: The Loader class does not implement this method.", 2069);

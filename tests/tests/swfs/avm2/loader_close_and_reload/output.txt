@@ -1,0 +1,14 @@
+close() before any load
+close() threw flash.errors::IOError 2029
+load(child_a.swf), then close()
+close() returned
+content: null
+load(child_a.swf), then load(child_b.swf)
+open: null
+progress: all bytes
+init: ChildB
+complete: ChildB
+content: ChildB
+close() after complete
+close() threw flash.errors::IOError 2029
+done

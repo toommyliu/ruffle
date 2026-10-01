@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 
 use crate::avm2::ClassObject;
 use crate::avm2::activation::Activation;
-use crate::avm2::error::make_error_2007;
+use crate::avm2::error::{make_error_2007, make_error_2029};
 use crate::avm2::globals::flash::display::display_object::initialize_for_allocator;
 use crate::avm2::globals::slots::flash_display_loader as loader_slots;
 use crate::avm2::globals::slots::flash_net_url_request as url_request_slots;
@@ -16,11 +16,11 @@ use crate::avm2::object::TObject as _;
 use crate::avm2::parameters::ParametersExt;
 use crate::avm2::value::Value;
 use crate::avm2::{Error, Object};
-use crate::avm2_stub_method;
 use crate::backend::navigator::{NavigationMethod, Request};
 use crate::display_object::LoaderDisplay;
 use crate::display_object::MovieClip;
 use crate::loader::LoadManager;
+use crate::loader::LoaderStatus;
 use crate::loader::MovieLoaderVMData;
 use crate::tag_utils::SwfMovie;
 use ruffle_common::tag_utils::LoadBytesInfo;
@@ -77,16 +77,10 @@ pub fn load<'gc>(
 
     let loader_info = loader_info.as_loader_info_object().unwrap();
 
-    if loader_info.init_event_fired() {
-        // FIXME: When calling load/loadBytes, then calling load/loadBytes again
-        // before the `init` event is fired, the first load is cancelled.
-        avm2_stub_method!(
-            activation,
-            "flash.display.Loader",
-            "load",
-            "reusing a Loader"
-        );
-    }
+    activation
+        .context
+        .load_manager
+        .remove_loads_into(loader_info, |_| true);
 
     // Unload the loader, in case something was already loaded.
     loader_info.unload(activation.context);
@@ -250,16 +244,10 @@ pub fn load_bytes<'gc>(
 
     let loader_info = loader_info.as_loader_info_object().unwrap();
 
-    if loader_info.init_event_fired() {
-        // FIXME: When calling load/loadBytes, then calling load/loadBytes again
-        // before the `init` event is fired, the first load is cancelled.
-        avm2_stub_method!(
-            activation,
-            "flash.display.Loader",
-            "loadBytes",
-            "reusing a Loader"
-        );
-    }
+    activation
+        .context
+        .load_manager
+        .remove_loads_into(loader_info, |_| true);
 
     // Unload the loader, in case something was already loaded.
     loader_info.unload(activation.context);
@@ -296,6 +284,31 @@ pub fn load_bytes<'gc>(
         return Err(Error::rust_error(
             format!("Error in Loader.loadBytes: {e:?}").into(),
         ));
+    }
+
+    Ok(Value::Undefined)
+}
+
+pub fn close<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    let loader_info = this
+        .get_slot(loader_slots::_CONTENT_LOADER_INFO)
+        .as_object()
+        .unwrap();
+
+    let loader_info = loader_info.as_loader_info_object().unwrap();
+
+    if !activation
+        .context
+        .load_manager
+        .remove_loads_into(loader_info, |status| status == LoaderStatus::Pending)
+    {
+        return Err(make_error_2029(activation));
     }
 
     Ok(Value::Undefined)

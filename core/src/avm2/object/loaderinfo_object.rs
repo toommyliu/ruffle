@@ -6,7 +6,7 @@ use crate::avm2::object::{EventObject, Object, StageObject, TObject};
 use crate::avm2::{Avm2, Error};
 use crate::context::UpdateContext;
 use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
-use crate::loader::ContentType;
+use crate::loader::{ContentType, LoaderStatus};
 use crate::tag_utils::SwfMovie;
 use core::fmt;
 use gc_arena::barrier::unlock;
@@ -298,7 +298,11 @@ impl<'gc> LoaderInfoObject<'gc> {
         self.set_errored(false);
         self.set_bytes_downloaded(0);
         self.reset_init_and_complete_events();
-        context.load_manager.remove_finished_loads_into(self);
+        // An unloaded `LoaderInfo` never fires `complete`, which is what
+        // finished loads wait for.
+        context
+            .load_manager
+            .remove_loads_into(self, |status| status == LoaderStatus::Succeeded);
 
         // Remove the Loader's content element if it exists.
         if let Some(child) = content {
