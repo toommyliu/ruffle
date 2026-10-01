@@ -264,7 +264,7 @@ impl Surface {
                     assert!(!needs_stencil, "Shader blend mode not implemented in masks");
                     let parent_blend_buffer =
                         target.update_blend_buffer(descriptors, texture_pool, draw_encoder);
-                    target.restore_frame_buffer(descriptors, draw_encoder);
+                    let (color, sample_count) = target.image_attachment();
                     run_pixelbender_shader_impl(
                         descriptors,
                         shader,
@@ -287,8 +287,8 @@ impl Surface {
                         ],
                         parent_blend_buffer.texture(),
                         draw_encoder,
-                        target.color_attachments(),
-                        target.sample_count(),
+                        color,
+                        sample_count,
                         &FilterSource::for_entire_texture(texture.texture(), texture.view()),
                     )
                     .expect("Failed to run PixelBender blend mode");

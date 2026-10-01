@@ -2,7 +2,6 @@ use crate::backend::RenderTargetMode;
 use crate::buffer_pool::{AlwaysCompatible, PoolEntry, TexturePool};
 use crate::descriptors::Descriptors;
 use crate::globals::Globals;
-use crate::utils::run_copy_pipeline;
 use std::cell::{Cell, OnceCell};
 use std::sync::Arc;
 
@@ -226,7 +225,10 @@ impl CommandTarget {
                 sample_count,
                 size,
                 format,
-                if sample_count > 1 {
+                if sample_count > 1 && !crate::stats::keep_samples() {
+                    wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TRANSIENT_ATTACHMENT
+                } else if sample_count > 1 {
                     wgpu::TextureUsages::RENDER_ATTACHMENT
                 } else {
                     wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -352,8 +354,8 @@ impl CommandTarget {
         &self.globals
     }
 
-    /// For a pass that loads and stores the frame buffer's samples: with
-    /// multisampling, call `restore_frame_buffer` first.
+    /// With multisampling, only for a pass that clears the target: its samples
+    /// aren't kept.
     pub fn color_attachments(&self) -> Option<wgpu::RenderPassColorAttachment<'_>> {
         let mut load = wgpu::LoadOp::Load;
         if self.color_needs_clear.set(false).is_ok()
@@ -363,40 +365,43 @@ impl CommandTarget {
         } else {
             debug_assert!(self.resolve_buffer.is_none() || self.frame_buffer_holds_image.get());
         }
-        self.frame_buffer_holds_image.set(true);
+        let keep_samples = self.resolve_buffer.is_none() || crate::stats::keep_samples();
+        self.frame_buffer_holds_image.set(keep_samples);
         Some(wgpu::RenderPassColorAttachment {
             view: self.frame_buffer.view(),
             resolve_target: self.resolved().map(|b| b.view()),
             ops: wgpu::Operations {
                 load,
-                store: wgpu::StoreOp::Store,
+                store: if keep_samples {
+                    wgpu::StoreOp::Store
+                } else {
+                    wgpu::StoreOp::Discard
+                },
             },
             depth_slice: None,
         })
     }
 
-    pub fn restore_frame_buffer(
-        &self,
-        descriptors: &Descriptors,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        if self.resolve_buffer.is_none()
-            || self.frame_buffer_holds_image.get()
-            || (self.color_needs_clear.get().is_none() && self.render_target_mode.color().is_some())
-        {
-            return;
+    /// For a pass that draws one quad over the whole target: with
+    /// multisampling it draws into the resolved image, and the next pass
+    /// starts from that.
+    pub fn image_attachment(&self) -> (Option<wgpu::RenderPassColorAttachment<'_>>, u32) {
+        if self.resolve_buffer.is_none() {
+            return (self.color_attachments(), 1);
         }
-        self.color_needs_clear.set(false).ok();
-        run_copy_pipeline(
-            descriptors,
-            self.format,
-            self.frame_buffer.view(),
-            self.color_view(),
-            &self.globals,
-            self.sample_count,
-            encoder,
-        );
-        self.frame_buffer_holds_image.set(true);
+        self.frame_buffer_holds_image.set(false);
+        (
+            Some(wgpu::RenderPassColorAttachment {
+                view: self.color_view(),
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            }),
+            1,
+        )
     }
 
     /// The color attachment for a pass, and, with multisampling, the image the
@@ -410,13 +415,10 @@ impl CommandTarget {
         Option<wgpu::RenderPassColorAttachment<'_>>,
         Option<&wgpu::BindGroup>,
     ) {
-        let Some(primary) = self
-            .resolve_buffer
-            .as_ref()
-            .filter(|_| !crate::stats::keep_samples())
-        else {
+        let Some(primary) = self.resolve_buffer.as_ref() else {
             return (self.color_attachments(), None);
         };
+        let keep_samples = crate::stats::keep_samples();
         let clear_color = self
             .color_needs_clear
             .set(false)
@@ -453,7 +455,7 @@ impl CommandTarget {
                 (wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), Some(reseed))
             }
         };
-        self.frame_buffer_holds_image.set(false);
+        self.frame_buffer_holds_image.set(keep_samples);
         let resolve = if self.resolved_to_spare.get() {
             self.spare_resolve_buffer.get_or_init(|| {
                 ResolveBuffer::new(
@@ -476,7 +478,11 @@ impl CommandTarget {
                 resolve_target: Some(resolve.view()),
                 ops: wgpu::Operations {
                     load,
-                    store: wgpu::StoreOp::Discard,
+                    store: if keep_samples {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
                 },
                 depth_slice: None,
             }),
