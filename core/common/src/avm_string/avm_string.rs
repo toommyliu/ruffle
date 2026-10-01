@@ -7,16 +7,28 @@ use ruffle_wstr::{Pattern, WStr, WString, wstr_impl_traits};
 use std::borrow::Cow;
 use std::ops::Deref;
 
+/// The arena paces collection by how many `Gc`s are allocated, and a string's
+/// characters live outside it. Charging their bytes, as allocations about the
+/// size of the heap an average `Gc` accounts for, lets garbage strings start a
+/// collection as other garbage does.
+const BYTES_PER_ALLOCATION: f64 = 1024.0;
+
 #[derive(Clone, Copy, Collect)]
 #[collect(no_drop)]
 pub struct AvmString<'gc>(Gc<'gc, AvmStringRepr<'gc>>);
 
 impl<'gc> AvmString<'gc> {
+    fn from_owned(mc: &Mutation<'gc>, string: WString) -> Gc<'gc, AvmStringRepr<'gc>> {
+        let bytes = string.len() * if string.is_wide() { 2 } else { 1 };
+        mc.metrics()
+            .adjust_debt(bytes as f64 / BYTES_PER_ALLOCATION);
+        Gc::new(mc, AvmStringRepr::from_raw(string, false))
+    }
+
     /// Turns a string to a fully owned (non-dependent) managed string.
     pub(super) fn to_fully_owned(self, mc: &Mutation<'gc>) -> Gc<'gc, AvmStringRepr<'gc>> {
         if self.0.is_dependent() {
-            let repr = AvmStringRepr::from_raw(WString::from(self.as_wstr()), false);
-            Gc::new(mc, repr)
+            Self::from_owned(mc, WString::from(self.as_wstr()))
         } else {
             self.0
         }
@@ -32,8 +44,7 @@ impl<'gc> AvmString<'gc> {
             Cow::Owned(utf8) => WString::from_utf8_owned(utf8),
             Cow::Borrowed(utf8) => WString::from_utf8(utf8),
         };
-        let repr = AvmStringRepr::from_raw(buf, false);
-        Self(Gc::new(gc_context, repr))
+        Self(Self::from_owned(gc_context, buf))
     }
 
     pub fn new_utf8_bytes(gc_context: &Mutation<'gc>, bytes: &[u8]) -> Self {
@@ -42,8 +53,7 @@ impl<'gc> AvmString<'gc> {
     }
 
     pub fn new<S: Into<WString>>(gc_context: &Mutation<'gc>, string: S) -> Self {
-        let repr = AvmStringRepr::from_raw(string.into(), false);
-        Self(Gc::new(gc_context, repr))
+        Self(Self::from_owned(gc_context, string.into()))
     }
 
     pub fn substring(mc: &Mutation<'gc>, string: AvmString<'gc>, start: usize, end: usize) -> Self {
