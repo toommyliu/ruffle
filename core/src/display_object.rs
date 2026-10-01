@@ -1478,6 +1478,19 @@ pub trait TDisplayObject<'gc>:
         self.bounds_with_transform(&self.base().matrix(), mode)
     }
 
+    /// Whether this object, drawn with the current transform, misses the
+    /// viewport.
+    #[no_dynamic]
+    fn is_culled(self, context: &RenderContext<'_, '_>) -> bool {
+        !context.is_offscreen
+            && !self
+                .bounds_with_transform(
+                    &context.transform_stack.transform().matrix,
+                    BoundsMode::Engine,
+                )
+                .intersects(&context.stage.view_bounds())
+    }
+
     /// The world bounding box of this object including children, relative to the stage.
     #[no_dynamic]
     fn world_bounds(self, mode: BoundsMode) -> Rectangle<Twips> {

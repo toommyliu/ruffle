@@ -598,7 +598,7 @@ impl<'gc> Stage<'gc> {
             }
         };
 
-        self.0.view_bounds.set(stage_tx * view_bounds);
+        self.0.view_bounds.set(letterbox_matrix * view_bounds);
 
         // Fire resize handler if stage size has changed.
         if scale_mode == StageScaleMode::NoScale && stage_size_changed {

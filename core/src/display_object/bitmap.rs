@@ -390,12 +390,7 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
     }
 
     fn render_self(self, context: &mut RenderContext<'_, 'gc>) {
-        if !context.is_offscreen
-            && !self
-                .world_bounds(BoundsMode::Engine)
-                .intersects(&context.stage.view_bounds())
-        {
-            // Off-screen; culled
+        if self.is_culled(context) {
             return;
         }
 

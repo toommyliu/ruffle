@@ -506,18 +506,16 @@ impl<'gc> TDisplayObject<'gc> for Video<'gc> {
     }
 
     fn render_with_options(self, context: &mut RenderContext<'_, 'gc>, options: RenderOptions) {
-        if !context.is_offscreen
-            && !self
-                .world_bounds(BoundsMode::Engine)
-                .intersects(&context.stage.view_bounds())
-        {
-            // Off-screen; culled
-            return;
-        }
-
         if options.apply_transform {
             let transform = self.base().transform(options.apply_matrix);
             context.transform_stack.push(&transform);
+        }
+
+        if self.is_culled(context) {
+            if options.apply_transform {
+                context.transform_stack.pop();
+            }
+            return;
         }
 
         let mut transform = context.transform_stack.transform();
