@@ -2,7 +2,10 @@ package flash.display {
     import flash.events.EventDispatcher;
 
     public final class FrameLabel extends EventDispatcher {
+        [Ruffle(NativeAccessible)]
         private var _name:String;
+
+        [Ruffle(NativeAccessible)]
         private var _frame:int;
 
         public function FrameLabel(name:String, frame:int) {

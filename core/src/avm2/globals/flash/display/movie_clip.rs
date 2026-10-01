@@ -5,7 +5,8 @@ use crate::avm2::activation::Activation;
 use crate::avm2::array::ArrayStorage;
 use crate::avm2::error::{make_error_2001, make_error_2109};
 use crate::avm2::function::FunctionArgs;
-use crate::avm2::object::ArrayObject;
+use crate::avm2::globals::slots::flash_display_frame_label as frame_label_slots;
+use crate::avm2::object::{ArrayObject, TObject, scriptobject_allocator};
 use crate::avm2::parameters::ParametersExt;
 use crate::avm2::value::Value;
 use crate::display_object::{GotoInfo, MovieClip, Scene, StopOrPlay};
@@ -141,11 +142,13 @@ fn labels_for_scene<'gc>(
         .labels_in_range(*scene_start, scene_start + scene_length)
         .into_iter()
         .map(|(name, frame)| {
-            let name: Value<'gc> = AvmString::new(activation.gc(), name).into();
+            // FrameLabel's and EventDispatcher's constructors only store these.
+            let label = scriptobject_allocator(frame_label_class, activation)?;
+            let name = AvmString::new(activation.gc(), name);
+            label.set_slot(frame_label_slots::_NAME, name.into(), activation)?;
             let local_frame = frame - scene_start + 1;
-            let args = [name, local_frame.into()];
-
-            frame_label_class.construct(activation, &args)
+            label.set_slot(frame_label_slots::_FRAME, local_frame.into(), activation)?;
+            Ok(Value::from(label))
         })
         .collect::<Result<ArrayStorage<'gc>, Error<'gc>>>()?;
 
