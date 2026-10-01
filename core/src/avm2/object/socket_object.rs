@@ -104,12 +104,26 @@ impl<'gc> SocketObject<'gc> {
         Ok(bytes.collect())
     }
 
+    fn read_array<const N: usize>(self) -> Result<[u8; N], ByteArrayError> {
+        let mut buf = self.read_buffer();
+
+        if N > buf.len() {
+            return Err(ByteArrayError::EndOfFile);
+        }
+
+        let mut bytes = [0; N];
+        for (byte, value) in bytes.iter_mut().zip(buf.drain(..N)) {
+            *byte = value;
+        }
+        Ok(bytes)
+    }
+
     pub fn write_bytes(self, bytes: &[u8]) {
         self.0.write_buffer.borrow_mut().extend_from_slice(bytes)
     }
 
     pub fn read_boolean(self) -> Result<bool, ByteArrayError> {
-        Ok(self.read_bytes(1)? != [0])
+        Ok(self.read_array::<1>()? != [0])
     }
 
     pub fn write_boolean(self, val: bool) {
@@ -175,8 +189,8 @@ macro_rules! impl_read{
         impl<'gc> SocketObject<'gc> {
             $( pub fn $method_name (&self) -> Result<$data_type, ByteArrayError> {
                 Ok(match self.endian() {
-                    Endian::Big => <$data_type>::from_be_bytes(self.read_bytes($size)?.try_into().unwrap()),
-                    Endian::Little => <$data_type>::from_le_bytes(self.read_bytes($size)?.try_into().unwrap())
+                    Endian::Big => <$data_type>::from_be_bytes(self.read_array::<$size>()?),
+                    Endian::Little => <$data_type>::from_le_bytes(self.read_array::<$size>()?)
                 })
              } )*
         }
