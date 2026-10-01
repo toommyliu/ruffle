@@ -10,7 +10,7 @@ mod context;
 mod interner;
 mod repr;
 
-pub use avm_string::AvmString;
+pub use avm_string::{AvmString, BYTES_PER_ALLOCATION};
 pub use common::CommonStrings;
 pub use context::{HasStringContext, StringContext};
 pub use interner::{AvmAtom, AvmStringInterner};

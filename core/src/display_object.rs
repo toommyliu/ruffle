@@ -154,6 +154,7 @@ impl BitmapCache {
     #[expect(clippy::too_many_arguments)]
     fn update(
         &mut self,
+        mc: &Mutation<'_>,
         renderer: &mut dyn RenderBackend,
         matrix: Matrix,
         source_width: u32,
@@ -217,6 +218,9 @@ impl BitmapCache {
             self.bitmap = handle.map(|(handle, texture_width, texture_height)| {
                 self.texture_width = texture_width;
                 self.texture_height = texture_height;
+                let bytes = f64::from(texture_width) * f64::from(texture_height) * 4.0;
+                mc.metrics()
+                    .adjust_debt(bytes / crate::string::BYTES_PER_ALLOCATION);
                 BitmapInfo {
                     width: actual_width.get(),
                     height: actual_height.get(),
@@ -1121,6 +1125,7 @@ pub fn render_base<'gc>(
                         )
                     });
                     cache.update(
+                        context.gc_context,
                         context.renderer,
                         base_transform.matrix,
                         width,

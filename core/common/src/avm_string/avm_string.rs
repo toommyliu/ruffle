@@ -7,11 +7,12 @@ use ruffle_wstr::{Pattern, WStr, WString, wstr_impl_traits};
 use std::borrow::Cow;
 use std::ops::Deref;
 
-/// The arena paces collection by how many `Gc`s are allocated, and a string's
-/// characters live outside it. Charging their bytes, as allocations about the
-/// size of the heap an average `Gc` accounts for, lets garbage strings start a
+/// The arena paces collection by how many `Gc`s are allocated, and memory a
+/// `Gc` owns outside it (a string's characters, a bitmap cache's texture)
+/// doesn't count. Charging those bytes, as allocations about the size of the
+/// heap an average `Gc` accounts for, lets garbage holding them start a
 /// collection as other garbage does.
-const BYTES_PER_ALLOCATION: f64 = 1024.0;
+pub const BYTES_PER_ALLOCATION: f64 = 1024.0;
 
 #[derive(Clone, Copy, Collect)]
 #[collect(no_drop)]
