@@ -480,7 +480,16 @@ impl NavigatorBackend for WebNavigatorBackend {
                 });
                 let _ = JsFuture::from(promise).await;
             }
-            if let Err(e) = future.await {
+            let mut future = future;
+            let result = std::future::poll_fn(|cx| {
+                let poll = future.as_mut().poll(cx);
+                if let Some(player) = player.upgrade() {
+                    crate::wake_instance(&player);
+                }
+                poll
+            })
+            .await;
+            if let Err(e) = result {
                 tracing::error!("Asynchronous error occurred: {}", e);
             }
         };

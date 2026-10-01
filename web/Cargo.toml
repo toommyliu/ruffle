@@ -29,7 +29,7 @@ webgl = ["ruffle_render_webgl"]
 webgpu = ["ruffle_render_wgpu"]
 wgpu-webgl = ["ruffle_render_wgpu", "ruffle_render_wgpu/webgl"]
 profiling = []
-stats = ["ruffle_render_wgpu?/stats", "web-sys/Performance"]
+stats = ["ruffle_render_wgpu?/stats"]
 
 [dependencies]
 console_error_panic_hook = { version = "0.1.7", optional = true }
@@ -73,7 +73,7 @@ features = [
     "AudioDestinationNode", "AudioNode", "AudioParam", "Blob", "BlobPropertyBag",
     "ChannelMergerNode", "ChannelSplitterNode", "ClipboardEvent", "DataTransfer", "Element",
     "EventTarget", "GainNode", "Headers", "HtmlCanvasElement", "HtmlDocument", "HtmlElement", "HtmlFormElement",
-    "HtmlInputElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "PageTransitionEvent", "PointerEvent",
+    "HtmlInputElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "PageTransitionEvent", "Performance", "PointerEvent",
     "Request", "RequestInit", "Response", "Storage", "WheelEvent", "Window", "ReadableStream", "RequestCredentials",
     "Url", "WebGlContextEvent", "Clipboard", "FocusEvent", "FocusOptions", "ShadowRoot", "Gamepad", "GamepadButton", "OffscreenCanvas",
     "TextMetrics", "OffscreenCanvasRenderingContext2d"

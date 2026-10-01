@@ -32,7 +32,6 @@ use std::sync::{Arc, Mutex};
 use std::{
     cell::{Cell, RefCell},
     error::Error,
-    num::NonZeroI32,
 };
 use tracing_subscriber::layer::{Layered, SubscriberExt};
 use tracing_subscriber::registry::Registry;
@@ -129,7 +128,8 @@ struct RuffleInstance {
     window: Window,
     timestamp: Option<f64>,
     animation_handler: Option<AnimationHandler>, // requestAnimationFrame callback
-    animation_handler_id: Option<NonZeroI32>,    // requestAnimationFrame id
+    timeout_handler: Option<Closure<dyn FnMut()>>,
+    scheduled_tick: Cell<Option<ScheduledTick>>,
     background_tick_mode: bool,
     render_scale: f64,
     mouse_move_callback: Option<JsCallback<PointerEvent>>,
@@ -347,9 +347,7 @@ impl RuffleHandle {
     /// Use `tick_for_background` to advance the player while the tab is hidden.
     pub fn enable_background_tick_mode(&self) {
         let _ = self.with_instance_mut(|instance| {
-            if let Some(id) = instance.animation_handler_id.take() {
-                let _ = instance.window.cancel_animation_frame(id.into());
-            }
+            instance.cancel_scheduled_tick();
             instance.background_tick_mode = true;
         });
     }
@@ -359,13 +357,8 @@ impl RuffleHandle {
     pub fn restart_animation_loop(&self) {
         let _ = self.with_instance_mut(|instance| {
             instance.background_tick_mode = false;
-            if let Some(handler) = &instance.animation_handler {
-                let id = instance
-                    .window
-                    .request_animation_frame(handler.as_ref().unchecked_ref())
-                    .unwrap_or_default();
-                instance.animation_handler_id = NonZeroI32::new(id);
-            }
+            instance.cancel_scheduled_tick();
+            instance.request_animation_frame();
         });
     }
 
@@ -585,7 +578,8 @@ impl RuffleHandle {
             device_pixel_ratio: window.device_pixel_ratio(),
             window: window.clone(),
             animation_handler: None,
-            animation_handler_id: None,
+            timeout_handler: None,
+            scheduled_tick: Cell::new(None),
             background_tick_mode: false,
             render_scale: 1.0,
             mouse_move_callback: None,
@@ -632,6 +626,9 @@ impl RuffleHandle {
             instance.animation_handler = Some(Closure::new(move |timestamp| {
                 ruffle.tick(timestamp);
             }));
+            instance.timeout_handler = window.performance().map(|performance| {
+                Closure::new(move || ruffle.tick(performance.now())) as Closure<dyn FnMut()>
+            });
 
             // Create mouse move handler.
             instance.mouse_move_callback = Some(JsCallback::register(
@@ -1161,6 +1158,7 @@ impl RuffleHandle {
                     let instance = instance.try_borrow()?;
                     let _subscriber =
                         tracing::subscriber::set_default(instance.log_subscriber.clone());
+                    instance.wake();
                     // This clone lets us drop the instance to avoid potential double-borrows.
                     let core = instance.core.clone();
                     drop(instance);
@@ -1183,6 +1181,7 @@ impl RuffleHandle {
 
     fn tick(self, timestamp: f64) {
         let mut dt = 0.0;
+        let mut next_frame_in = None;
         let mut new_dimensions = None;
         let mut gamepad_button_events = Vec::new();
         let _ = self.with_instance_mut(|instance| {
@@ -1265,18 +1264,13 @@ impl RuffleHandle {
                 }
             }
 
-            // Request next animation frame (skipped in background tick mode).
-            if !instance.background_tick_mode {
-                if let Some(handler) = &instance.animation_handler {
-                    let id = instance
-                        .window
-                        .request_animation_frame(handler.as_ref().unchecked_ref())
-                        .unwrap_or_default();
-                    instance.animation_handler_id = NonZeroI32::new(id);
-                } else {
-                    instance.animation_handler_id = None;
-                }
-            }
+            instance.scheduled_tick.set(None);
+
+            // An animation frame's timestamp is when its frame began, which can be
+            // before a timeout that ran in the same frame.
+            let timestamp = instance
+                .timestamp
+                .map_or(timestamp, |prev| prev.max(timestamp));
 
             // Calculate the elapsed time since the last tick.
             dt = instance
@@ -1330,6 +1324,16 @@ impl RuffleHandle {
                 timings.rendered();
             }
             timings.report(core);
+
+            next_frame_in = core
+                .is_playing()
+                .then(|| core.time_til_next_frame().as_secs_f64() * 1000.0);
+        });
+
+        let _ = self.with_instance(|instance| {
+            if !instance.background_tick_mode {
+                instance.schedule_tick(next_frame_in);
+            }
         });
     }
 
@@ -1369,7 +1373,82 @@ struct PendingMouseMove {
 
 const MAX_MOUSE_MOVE_DELAY_MS: f64 = 50.0;
 
+const DISPLAY_FRAME_MS: f64 = 1000.0 / 60.0;
+
+// Canvas resizes and gamepads are only noticed in a tick.
+const MAX_SLEEP_MS: f64 = 50.0;
+
+#[derive(Clone, Copy)]
+enum ScheduledTick {
+    AnimationFrame(i32),
+    Timeout(i32),
+}
+
+fn wake_instance(core: &Arc<Mutex<Player>>) {
+    let _ = INSTANCES.try_with(|instances| {
+        let Ok(instances) = instances.try_borrow() else {
+            return;
+        };
+        for instance in instances.values() {
+            if let Ok(instance) = instance.try_borrow()
+                && Arc::ptr_eq(&instance.core, core)
+            {
+                instance.wake();
+            }
+        }
+    });
+}
+
 impl RuffleInstance {
+    fn schedule_tick(&self, next_frame_in: Option<f64>) {
+        let sleep =
+            next_frame_in.map_or(MAX_SLEEP_MS, |ms| (ms - DISPLAY_FRAME_MS).min(MAX_SLEEP_MS));
+        match &self.timeout_handler {
+            Some(handler)
+                if sleep >= DISPLAY_FRAME_MS / 2.0 && self.pending_mouse_move.get().is_none() =>
+            {
+                self.scheduled_tick.set(
+                    self.window
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(
+                            handler.as_ref().unchecked_ref(),
+                            sleep as i32,
+                        )
+                        .ok()
+                        .map(ScheduledTick::Timeout),
+                );
+            }
+            _ => self.request_animation_frame(),
+        }
+    }
+
+    fn request_animation_frame(&self) {
+        if let Some(handler) = &self.animation_handler {
+            self.scheduled_tick.set(
+                self.window
+                    .request_animation_frame(handler.as_ref().unchecked_ref())
+                    .ok()
+                    .map(ScheduledTick::AnimationFrame),
+            );
+        }
+    }
+
+    fn wake(&self) {
+        if let Some(ScheduledTick::Timeout(id)) = self.scheduled_tick.get() {
+            self.window.clear_timeout_with_handle(id);
+            self.request_animation_frame();
+        }
+    }
+
+    fn cancel_scheduled_tick(&self) {
+        match self.scheduled_tick.take() {
+            Some(ScheduledTick::AnimationFrame(id)) => {
+                self.window.cancel_animation_frame(id).warn_on_error();
+            }
+            Some(ScheduledTick::Timeout(id)) => self.window.clear_timeout_with_handle(id),
+            None => {}
+        }
+    }
+
     fn flush_mouse_move(&self) {
         if let Some(pending) = self.pending_mouse_move.take() {
             let _ = self.with_core_mut(|core| {
@@ -1401,6 +1480,7 @@ impl RuffleInstance {
     where
         F: FnOnce(&mut ruffle_core::Player) -> O,
     {
+        self.wake();
         let ret = self
             .core
             .try_lock()
@@ -1415,6 +1495,7 @@ impl RuffleInstance {
 
 impl Drop for RuffleInstance {
     fn drop(&mut self) {
+        self.cancel_scheduled_tick();
         self.canvas.remove();
 
         // Stop all audio playing from the instance.
@@ -1422,13 +1503,6 @@ impl Drop for RuffleInstance {
             core.audio_mut().stop_all_sounds();
             core.flush_shared_objects();
         });
-
-        // Cancel the animation handler, if it's still active.
-        if let Some(id) = self.animation_handler_id {
-            self.window
-                .cancel_animation_frame(id.into())
-                .warn_on_error();
-        }
     }
 }
 
