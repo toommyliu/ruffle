@@ -56,6 +56,14 @@ export class PlayerV1Impl implements PlayerV1 {
         this.#inner.volume = value;
     }
 
+    get renderScale(): number {
+        return this.#inner.renderScale;
+    }
+
+    set renderScale(value: number) {
+        this.#inner.renderScale = value;
+    }
+
     get fullscreenEnabled(): boolean {
         return this.#inner.fullscreenEnabled;
     }

@@ -131,6 +131,7 @@ struct RuffleInstance {
     animation_handler: Option<AnimationHandler>, // requestAnimationFrame callback
     animation_handler_id: Option<NonZeroI32>,    // requestAnimationFrame id
     background_tick_mode: bool,
+    render_scale: f64,
     mouse_move_callback: Option<JsCallback<PointerEvent>>,
     pending_mouse_move: Cell<Option<PendingMouseMove>>,
     mouse_enter_callback: Option<JsCallback<PointerEvent>>,
@@ -387,6 +388,21 @@ impl RuffleHandle {
         let _ = self.with_core_mut(|core| core.set_volume(value));
     }
 
+    pub fn render_scale(&self) -> f64 {
+        self.with_instance(|instance| instance.render_scale)
+            .unwrap_or(1.0)
+    }
+
+    pub fn set_render_scale(&self, value: f64) {
+        let _ = self.with_instance_mut(|instance| {
+            instance.render_scale = if value.is_finite() {
+                value.clamp(0.1, 2.0)
+            } else {
+                1.0
+            };
+        });
+    }
+
     pub fn renderer_debug_info(&self) -> JsValue {
         self.with_core(|core| JsValue::from_str(&core.renderer().debug_info()))
             .unwrap_or(JsValue::NULL)
@@ -571,6 +587,7 @@ impl RuffleHandle {
             animation_handler: None,
             animation_handler_id: None,
             background_tick_mode: false,
+            render_scale: 1.0,
             mouse_move_callback: None,
             pending_mouse_move: Cell::new(None),
             mouse_enter_callback: None,
@@ -1172,7 +1189,8 @@ impl RuffleHandle {
             // Check for canvas resize.
             let canvas_width = instance.canvas.client_width();
             let canvas_height = instance.canvas.client_height();
-            let device_pixel_ratio = instance.window.device_pixel_ratio(); // Changes via user zooming.
+            // Changes via user zooming.
+            let device_pixel_ratio = instance.window.device_pixel_ratio() * instance.render_scale;
             if instance.canvas_width != canvas_width
                 || instance.canvas_height != canvas_height
                 || (instance.device_pixel_ratio - device_pixel_ratio).abs() >= f64::EPSILON

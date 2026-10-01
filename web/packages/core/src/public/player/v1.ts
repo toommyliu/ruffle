@@ -96,6 +96,23 @@ export interface PlayerV1 {
     set volume(value: number);
 
     /**
+     * Returns the fraction of the display's resolution the movie is rendered at.
+     *
+     * @returns The render scale. 1.0 renders at the display's resolution.
+     */
+    get renderScale(): number;
+
+    /**
+     * Sets the fraction of the display's resolution the movie is rendered at.
+     *
+     * Below 1.0 the browser scales the rendered movie up to fill the player,
+     * so it costs less to render and looks blurrier.
+     *
+     * @param value The render scale, clamped to between 0.1 and 2.0.
+     */
+    set renderScale(value: number);
+
+    /**
      * Checks if this player is allowed to be fullscreen by the browser.
      *
      * @returns True if you may call {@link requestFullscreen}.

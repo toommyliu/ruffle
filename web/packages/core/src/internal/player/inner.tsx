@@ -204,6 +204,7 @@ export class InnerPlayer {
     private pointerMoveMaxDistance = 0;
 
     private volumeSettings: VolumeControls;
+    private renderScaleSetting = 1.0;
     private readonly debugPlayerInfo: () => string;
     protected readonly onCallbackAvailable: (name: string) => void;
     private readonly onFSCommand: ((command: string, args: string) => void)[] =
@@ -739,6 +740,7 @@ export class InnerPlayer {
             this.panic(e);
             throw e;
         });
+        this.instance!.set_render_scale(this.renderScaleSetting);
 
         this.rendererDebugInfo = this.instance!.renderer_debug_info();
 
@@ -1063,6 +1065,15 @@ export class InnerPlayer {
         if (this.instance) {
             this.instance.set_volume(value);
         }
+    }
+
+    get renderScale(): number {
+        return this.instance?.render_scale() ?? this.renderScaleSetting;
+    }
+
+    set renderScale(value: number) {
+        this.renderScaleSetting = value;
+        this.instance?.set_render_scale(value);
     }
 
     /**
