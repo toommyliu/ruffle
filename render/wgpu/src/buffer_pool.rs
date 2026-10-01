@@ -92,21 +92,30 @@ impl TexturePool {
     pub fn idle_bytes(&self) -> u64 {
         self.pools
             .iter()
-            .map(|(key, pool)| {
-                let texel = key.format.block_copy_size(None).unwrap_or(4);
-                let bytes = u64::from(key.size.width)
-                    * u64::from(key.size.height)
-                    * u64::from(texel)
-                    * u64::from(key.sample_count);
-                bytes * pool.len() as u64
-            })
+            .map(|(key, pool)| key.bytes() * pool.len() as u64)
             .sum()
     }
 
-    pub fn end_frame(&mut self, max_idle_frames: u64) {
+    pub fn end_frame(&mut self, max_idle_frames: u64, max_idle_bytes: u64) {
         let frame = self.frame;
         let fresh = |last: &u64| frame - *last <= max_idle_frames;
-        self.last_used.retain(|_, last| fresh(last));
+        let mut idle: Vec<_> = self
+            .last_used
+            .iter()
+            .filter(|(_, last)| **last != frame)
+            .map(|(key, last)| (*last, *key))
+            .collect();
+        idle.sort_unstable_by_key(|(last, _)| std::cmp::Reverse(*last));
+        let mut kept_bytes = 0;
+        for (last, key) in idle {
+            kept_bytes += self
+                .pools
+                .get(&key)
+                .map_or(0, |pool| key.bytes() * pool.len() as u64);
+            if !fresh(&last) || kept_bytes > max_idle_bytes {
+                self.last_used.remove(&key);
+            }
+        }
         self.pools.retain(|key, pool| {
             let used = self.last_used.contains_key(key);
             if !used {
@@ -147,6 +156,16 @@ struct TextureKey {
     usage: wgpu::TextureUsages,
     format: wgpu::TextureFormat,
     sample_count: u32,
+}
+
+impl TextureKey {
+    fn bytes(&self) -> u64 {
+        let texel = self.format.block_copy_size(None).unwrap_or(4);
+        u64::from(self.size.width)
+            * u64::from(self.size.height)
+            * u64::from(texel)
+            * u64::from(self.sample_count)
+    }
 }
 
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]

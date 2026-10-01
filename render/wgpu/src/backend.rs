@@ -1146,9 +1146,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
         self.active_frame
             .submit_for_target(&self.descriptors, &self.target, frame_output);
-        self.offscreen_texture_pool
-            .end_frame(OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES);
-        self.texture_pool.end_frame(TEXTURE_MAX_IDLE_FRAMES);
+        self.offscreen_texture_pool.end_frame(
+            OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES,
+            TEXTURE_POOL_MAX_IDLE_BYTES,
+        );
+        self.texture_pool
+            .end_frame(TEXTURE_MAX_IDLE_FRAMES, TEXTURE_POOL_MAX_IDLE_BYTES);
         self.mesh_buffers.end_frame();
         self.dropped_textures.destroy();
         self.descriptors
@@ -1810,6 +1813,11 @@ const _: () = assert!(
 const OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES: u64 = 60;
 
 const TEXTURE_MAX_IDLE_FRAMES: u64 = 600;
+
+/// Textures not used in the last frame that a pool keeps, newest first. Layers
+/// and caches that grow as they animate need a new size of target nearly every
+/// time they're drawn, and at 4x multisampling a large one is over 100 MB.
+const TEXTURE_POOL_MAX_IDLE_BYTES: u64 = 32 * 1024 * 1024;
 
 static PASSES_SINCE_SUBMIT: AtomicU64 = AtomicU64::new(0);
 
