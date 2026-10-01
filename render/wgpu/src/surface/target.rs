@@ -320,20 +320,16 @@ impl CommandTarget {
     }
 
     /// Leaves the image in the texture this target was made for, if it has one.
-    pub fn finish(&self, descriptors: &Descriptors, encoder: &mut wgpu::CommandEncoder) {
+    pub fn finish(&self, encoder: &mut wgpu::CommandEncoder) {
         if let (Some(primary), RenderTargetMode::ExistingWithColor(..), true) = (
             &self.resolve_buffer,
             &self.render_target_mode,
             self.resolved_to_spare.get(),
         ) {
-            run_copy_pipeline(
-                descriptors,
-                self.format,
-                primary.view(),
-                self.color_view(),
-                &self.globals,
-                1,
-                encoder,
+            encoder.copy_texture_to_texture(
+                self.color_texture().as_image_copy(),
+                primary.texture().as_image_copy(),
+                self.size,
             );
             self.resolved_to_spare.set(false);
         }

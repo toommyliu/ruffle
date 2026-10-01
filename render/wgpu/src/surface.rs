@@ -464,7 +464,7 @@ impl Surface {
 
         // If nothing happened, ensure it's cleared so we don't operate on garbage data
         target.ensure_cleared(draw_encoder);
-        target.finish(descriptors, draw_encoder);
+        target.finish(draw_encoder);
 
         target
     }

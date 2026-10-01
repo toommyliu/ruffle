@@ -782,7 +782,20 @@ fn filter_into_cache(
             (i == last).then_some(cache),
         );
     }
-    if *target.color_texture() != cache.texture {
+    let filtered = target.color_texture();
+    if *filtered == cache.texture {
+        return;
+    }
+    if filtered.sample_count() == cache.texture.sample_count()
+        && filtered.format() == cache.texture.format()
+        && filtered.size() == cache.texture.size()
+    {
+        scope.copy_texture_to_texture(
+            filtered.as_image_copy(),
+            cache.texture.as_image_copy(),
+            cache.texture.size(),
+        );
+    } else {
         run_copy_pipeline(
             descriptors,
             cache.texture.format(),
