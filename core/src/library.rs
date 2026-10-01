@@ -4,7 +4,8 @@ use crate::avm2::{Class as Avm2Class, Domain as Avm2Domain};
 use crate::backend::audio::SoundHandle;
 use crate::character::Character;
 
-use crate::display_object::{Bitmap, CacheTextures, Graphic, MorphShape, Text};
+use crate::display_object::{Bitmap, Graphic, MorphShape, Text};
+use crate::expiring::ExpiringValues;
 use crate::font::{Font, FontDescriptor, FontLike, FontQuery, FontType};
 use crate::prelude::*;
 use crate::string::AvmString;
@@ -13,6 +14,7 @@ use gc_arena::collect::Trace;
 use gc_arena::{Collect, Finalization, Gc, GcWeak, Mutation};
 use ruffle_render::backend::RenderBackend;
 use ruffle_render::bitmap::BitmapHandle;
+use ruffle_render::bitmap::BitmapInfo;
 use ruffle_render::utils::remove_invalid_jpeg_data;
 use ruffle_wstr::{WStr, WString};
 
@@ -528,8 +530,14 @@ pub struct Library<'gc> {
     #[collect(require_static)]
     freed_sounds: RefCell<Vec<SoundHandle>>,
 
+    /// Hidden objects aren't rendered, so without this their bitmap caches
+    /// would keep their textures for as long as the objects live.
     #[collect(require_static)]
-    cache_textures: CacheTextures,
+    cache_textures: ExpiringValues<BitmapInfo>,
+
+    /// Decoded shape records take several times the size of their tags.
+    #[collect(require_static)]
+    decoded_shapes: ExpiringValues<swf::Shape>,
 }
 
 impl<'gc> Library<'gc> {
@@ -546,6 +554,7 @@ impl<'gc> Library<'gc> {
             gc_cycles: 0,
             freed_sounds: Default::default(),
             cache_textures: Default::default(),
+            decoded_shapes: Default::default(),
         }
     }
 
@@ -887,8 +896,17 @@ impl<'gc> Library<'gc> {
 
     /// Evicts cached font resources that haven't been used, across all device
     /// fonts. Meant to be called once per rendered frame.
-    pub fn cache_textures_mut(&mut self) -> &mut CacheTextures {
+    pub fn cache_textures_mut(&mut self) -> &mut ExpiringValues<BitmapInfo> {
         &mut self.cache_textures
+    }
+
+    pub fn decoded_shapes_mut(&mut self) -> &mut ExpiringValues<swf::Shape> {
+        &mut self.decoded_shapes
+    }
+
+    pub fn end_frame(&mut self) {
+        self.cache_textures.end_frame();
+        self.decoded_shapes.end_frame();
     }
 
     pub fn sweep_font_caches(&self) {

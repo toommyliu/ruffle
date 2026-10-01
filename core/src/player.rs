@@ -2162,7 +2162,7 @@ impl Player {
             let commands = render_context.commands;
 
             gc_root.library.sweep_font_caches();
-            gc_root.library.cache_textures_mut().end_frame();
+            gc_root.library.end_frame();
 
             (cache_draws, commands)
         });

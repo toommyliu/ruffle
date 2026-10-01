@@ -6,9 +6,10 @@ use crate::avm2::{
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{BoundsMode, DisplayObjectBase};
 use crate::drawing::Drawing;
+use crate::expiring::{Expiring, ExpiringValues};
 use crate::library::MovieLibrarySource;
 use crate::prelude::*;
-use crate::tag_utils::SwfMovie;
+use crate::tag_utils::{SwfMovie, SwfSlice};
 use crate::tessellation_cache::TessellationCache;
 use crate::vminterface::Instantiator;
 use core::fmt;
@@ -19,7 +20,8 @@ use ruffle_common::utils::HasPrefixField;
 use ruffle_render::backend::ShapeHandle;
 use ruffle_render::backend::null::NullBitmapSource;
 use ruffle_render::commands::CommandHandler;
-use std::cell::{OnceCell, RefCell, RefMut};
+use std::cell::{OnceCell, Ref, RefCell, RefMut};
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Clone, Collect, Copy)]
@@ -51,16 +53,19 @@ impl<'gc> Graphic<'gc> {
     /// Construct a `Graphic` from it's associated `Shape` tag.
     pub fn from_swf_tag(
         context: &mut UpdateContext<'gc>,
-        swf_shape: swf::Shape,
-        movie: Arc<SwfMovie>,
+        swf_shape: &swf::Shape,
+        tag: SwfSlice,
+        tag_version: u8,
     ) -> Self {
         let shared = GraphicShared {
             id: swf_shape.id,
             shape_bounds: swf_shape.shape_bounds,
             edge_bounds: swf_shape.edge_bounds,
             fallback_handle: OnceCell::new(),
-            shape: swf_shape,
-            movie,
+            has_records: !swf_shape.shape.is_empty(),
+            shape: Default::default(),
+            tag,
+            tag_version,
             scaled_handle: RefCell::new(TessellationCache::new()),
         };
 
@@ -83,19 +88,10 @@ impl<'gc> Graphic<'gc> {
             shape_bounds: Default::default(),
             edge_bounds: Default::default(),
             fallback_handle: OnceCell::new(),
-            shape: swf::Shape {
-                version: 32,
-                id: 0,
-                shape_bounds: Default::default(),
-                edge_bounds: Default::default(),
-                flags: swf::ShapeFlag::empty(),
-                styles: swf::ShapeStyles {
-                    fill_styles: Vec::new(),
-                    line_styles: Vec::new(),
-                },
-                shape: Vec::new(),
-            },
-            movie: context.root_swf.clone(),
+            has_records: false,
+            shape: Default::default(),
+            tag: SwfSlice::empty(context.root_swf.clone()),
+            tag_version: 1,
             scaled_handle: RefCell::new(TessellationCache::new()),
         };
 
@@ -150,10 +146,11 @@ impl<'gc> Graphic<'gc> {
         }
 
         // Retessellate at the new scale
-        let library = context.library.library_for_movie(shared.movie.clone());
+        let shape = shared.shape(context.library.decoded_shapes_mut());
+        let library = context.library.library_for_movie(shared.tag.movie.clone());
         if let Some(library) = library {
             let new_handle = context.renderer.register_shape_with_scale(
-                (&shared.shape).into(),
+                (&*shape).into(),
                 &MovieLibrarySource { library },
                 current_scale,
             );
@@ -176,7 +173,7 @@ impl<'gc> Graphic<'gc> {
                 .get_or_init(|| {
                     context
                         .renderer
-                        .register_shape((&shared.shape).into(), &NullBitmapSource)
+                        .register_shape((&*shape).into(), &NullBitmapSource)
                 })
                 .clone()
         }
@@ -256,7 +253,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
 
         if let Some(drawing) = self.0.drawing.get() {
             drawing.borrow().render(context);
-        } else if !self.0.shared.get().shape.shape.is_empty() {
+        } else if self.0.shared.get().has_records {
             let transform = context.transform_stack.transform();
 
             // Calculate the current scale from the transform, to determine if
@@ -274,7 +271,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
 
     fn hit_test_shape(
         self,
-        _context: &mut UpdateContext<'gc>,
+        context: &mut UpdateContext<'gc>,
         point: Point<Twips>,
         options: HitTestOptions,
     ) -> bool {
@@ -291,8 +288,13 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
                     return true;
                 }
             } else {
-                let shape = &self.0.shared.get().shape;
-                return ruffle_render::shape_utils::shape_hit_test(shape, point, &local_matrix);
+                let shared = self.0.shared.get();
+                return shared.has_records
+                    && ruffle_render::shape_utils::shape_hit_test(
+                        &shared.shape(context.library.decoded_shapes_mut()),
+                        point,
+                        &local_matrix,
+                    );
             }
         }
 
@@ -312,7 +314,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
     }
 
     fn movie(self) -> Arc<SwfMovie> {
-        self.0.shared.get().movie.clone()
+        self.0.shared.get().tag.movie.clone()
     }
 
     fn object1(self) -> Option<Avm1Object<'gc>> {
@@ -338,11 +340,42 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
 #[collect(require_static)]
 struct GraphicShared {
     id: CharacterId,
-    shape: swf::Shape,
+    has_records: bool,
+    shape: Rc<Expiring<swf::Shape>>,
+    tag: SwfSlice,
+    tag_version: u8,
     fallback_handle: OnceCell<ShapeHandle>,
     shape_bounds: Rectangle<Twips>,
     edge_bounds: Rectangle<Twips>,
-    movie: Arc<SwfMovie>,
     #[collect(require_static)]
     scaled_handle: RefCell<TessellationCache>,
+}
+
+impl GraphicShared {
+    fn shape(&self, shapes: &mut ExpiringValues<swf::Shape>) -> Ref<'_, swf::Shape> {
+        shapes.used(&self.shape);
+        if self.shape.value.borrow().is_none() {
+            let shape = swf::read::Reader::new(self.tag.data(), self.tag.version())
+                .read_define_shape(self.tag_version)
+                .unwrap_or_else(|error| {
+                    tracing::error!("Shape {} no longer decodes: {error}", self.id);
+                    swf::Shape {
+                        version: self.tag_version,
+                        id: self.id,
+                        shape_bounds: self.shape_bounds,
+                        edge_bounds: self.edge_bounds,
+                        flags: swf::ShapeFlag::empty(),
+                        styles: swf::ShapeStyles {
+                            fill_styles: Vec::new(),
+                            line_styles: Vec::new(),
+                        },
+                        shape: Vec::new(),
+                    }
+                });
+            self.shape.value.replace(Some(shape));
+        }
+        Ref::map(self.shape.value.borrow(), |shape| {
+            shape.as_ref().expect("Decoded above")
+        })
+    }
 }

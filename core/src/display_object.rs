@@ -8,6 +8,7 @@ use crate::avm2::{
 };
 use crate::context::{RenderContext, UpdateContext};
 use crate::drawing::Drawing;
+use crate::expiring::{Expiring, ExpiringValues};
 use crate::prelude::*;
 use crate::string::{AvmString, WString};
 use crate::tag_utils::SwfMovie;
@@ -25,7 +26,7 @@ use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::num::NonZero;
-use std::rc::{self, Rc};
+use std::rc::Rc;
 use std::sync::Arc;
 use swf::{ColorTransform, Fixed8};
 
@@ -110,59 +111,13 @@ pub struct BitmapCache {
     draw_offset: Point<i32>,
 
     /// The current contents of the cache, if any. Values are post-filters.
-    texture: Rc<CacheTexture>,
+    texture: Rc<Expiring<BitmapInfo>>,
 
     texture_width: u32,
     texture_height: u32,
 
     /// Whether we warned that this bitmap was too large to be cached
     warned_for_oversize: bool,
-}
-
-#[derive(Debug, Default)]
-struct CacheTexture {
-    bitmap: RefCell<Option<BitmapInfo>>,
-    last_drawn: Cell<u32>,
-    tracked: Cell<bool>,
-}
-
-/// Hidden objects aren't rendered, so without this their caches would keep
-/// their textures for as long as the objects live.
-#[derive(Default)]
-pub struct CacheTextures {
-    textures: Vec<rc::Weak<CacheTexture>>,
-    frame: u32,
-}
-
-impl CacheTextures {
-    const SWEEP_INTERVAL: u32 = 24;
-    const MAX_IDLE_FRAMES: u32 = 72;
-
-    fn drawn(&mut self, texture: &Rc<CacheTexture>) {
-        texture.last_drawn.set(self.frame);
-        if !texture.tracked.replace(true) {
-            self.textures.push(Rc::downgrade(texture));
-        }
-    }
-
-    pub fn end_frame(&mut self) {
-        self.frame = self.frame.wrapping_add(1);
-        if !self.frame.is_multiple_of(Self::SWEEP_INTERVAL) {
-            return;
-        }
-        let frame = self.frame;
-        self.textures.retain(|texture| {
-            let Some(texture) = texture.upgrade() else {
-                return false;
-            };
-            if frame.wrapping_sub(texture.last_drawn.get()) <= Self::MAX_IDLE_FRAMES {
-                return true;
-            }
-            texture.bitmap.take();
-            texture.tracked.set(false);
-            false
-        });
-    }
 }
 
 fn texture_size(width: u32, height: u32) -> (u32, u32) {
@@ -194,7 +149,7 @@ impl BitmapCache {
             || self.matrix_d != other.d
             || self.source_width != source_width
             || self.source_height != source_height
-            || self.texture.bitmap.borrow().is_none()
+            || self.texture.value.borrow().is_none()
     }
 
     /// Clears any dirtiness and ensure there's an appropriately sized texture allocated
@@ -219,7 +174,7 @@ impl BitmapCache {
         self.source_width = source_width;
         self.source_height = source_height;
         self.draw_offset = draw_offset;
-        if let Some(current) = &mut *self.texture.bitmap.borrow_mut()
+        if let Some(current) = &mut *self.texture.value.borrow_mut()
             && if exact_size {
                 (actual_width, actual_height) == (self.texture_width, self.texture_height)
             } else {
@@ -274,9 +229,9 @@ impl BitmapCache {
                     handle,
                 }
             });
-            self.texture.bitmap.replace(bitmap);
+            self.texture.value.replace(bitmap);
         } else {
-            self.texture.bitmap.take();
+            self.texture.value.take();
         }
     }
 
@@ -284,12 +239,12 @@ impl BitmapCache {
     /// This should only be used in situations where you can't render to the cache and it needs to be
     /// temporarily disabled.
     fn clear(&mut self) {
-        self.texture.bitmap.take();
+        self.texture.value.take();
     }
 
-    fn bitmap(&self, textures: &mut CacheTextures) -> Option<BitmapInfo> {
-        textures.drawn(&self.texture);
-        self.texture.bitmap.borrow().clone()
+    fn bitmap(&self, textures: &mut ExpiringValues<BitmapInfo>) -> Option<BitmapInfo> {
+        textures.used(&self.texture);
+        self.texture.value.borrow().clone()
     }
 }
 
