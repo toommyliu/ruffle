@@ -274,3 +274,70 @@ impl<Type, Description: BufferDescription> Deref for PoolEntry<Type, Description
         self.item.as_ref().expect("Item should exist until dropped")
     }
 }
+
+/// Uniforms and vertices needed only by the frame being recorded, written
+/// through a staging belt at increasing offsets of one buffer. wgpu's WebGPU
+/// backend doesn't destroy a dropped buffer, so a buffer made for each of them
+/// keeps its shared memory in the browser's GPU process until the JavaScript
+/// collector finds it.
+#[derive(Debug)]
+pub struct ScratchBuffer {
+    buffer: wgpu::Buffer,
+    used: u64,
+    retired: Vec<wgpu::Buffer>,
+}
+
+impl ScratchBuffer {
+    pub fn new(device: &wgpu::Device) -> Self {
+        Self {
+            buffer: Self::create(device, 256 * 1024),
+            used: 0,
+            retired: Vec::new(),
+        }
+    }
+
+    fn create(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: create_debug_label!("Scratch buffer").as_deref(),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    pub fn write(
+        &mut self,
+        device: &wgpu::Device,
+        staging_belt: &mut wgpu::util::StagingBelt,
+        encoder: &mut wgpu::CommandEncoder,
+        data: &[u8],
+        alignment: u64,
+    ) -> (wgpu::Buffer, wgpu::BufferAddress) {
+        let size = wgpu::BufferSize::new(data.len() as u64).expect("Scratch data isn't empty");
+        let mut offset = self.used.next_multiple_of(alignment);
+        if offset + size.get() > self.buffer.size() {
+            let grown = Self::create(
+                device,
+                (self.buffer.size() * 2).max(size.get().next_power_of_two()),
+            );
+            self.retired
+                .push(std::mem::replace(&mut self.buffer, grown));
+            offset = 0;
+        }
+        staging_belt
+            .write_buffer(encoder, &self.buffer, offset, size)
+            .copy_from_slice(data);
+        self.used = offset + size.get();
+        (self.buffer.clone(), offset)
+    }
+
+    /// Call once everything recorded since the last call has been submitted.
+    pub fn reset(&mut self) {
+        self.used = 0;
+        for buffer in self.retired.drain(..) {
+            buffer.destroy();
+        }
+    }
+}

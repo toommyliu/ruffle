@@ -18,7 +18,6 @@ use ruffle_render::quality::StageQuality;
 use std::sync::Arc;
 use target::CommandTarget;
 use tracing::instrument;
-use wgpu::util::DeviceExt;
 use wgpu_profiler::Scope;
 
 pub use crate::surface::commands::LayerRef;
@@ -340,14 +339,17 @@ impl Surface {
                             rect.height as f32 / height,
                         ]
                     });
-                    let region_buffer =
-                        descriptors
-                            .device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: create_debug_label!("Blend layer region").as_deref(),
-                                contents: bytemuck::cast_slice(&rect),
-                                usage: wgpu::BufferUsages::UNIFORM,
-                            });
+                    let (region_buffer, region_offset) =
+                        descriptors.scratch.lock().expect("Scratch lock").write(
+                            &descriptors.device,
+                            staging_belt,
+                            draw_encoder,
+                            bytemuck::cast_slice(&rect),
+                            descriptors
+                                .limits
+                                .min_uniform_buffer_offset_alignment
+                                .into(),
+                        );
 
                     let blend_bind_group =
                         descriptors
@@ -385,7 +387,13 @@ impl Surface {
                                     },
                                     wgpu::BindGroupEntry {
                                         binding: 3,
-                                        resource: region_buffer.as_entire_binding(),
+                                        resource: wgpu::BindingResource::Buffer(
+                                            wgpu::BufferBinding {
+                                                buffer: &region_buffer,
+                                                offset: region_offset,
+                                                size: wgpu::BufferSize::new(16),
+                                            },
+                                        ),
                                     },
                                 ],
                             });

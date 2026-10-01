@@ -10,7 +10,7 @@ use crate::utils::SampleCountMap;
 use bytemuck::{Pod, Zeroable};
 use std::sync::OnceLock;
 use swf::GlowFilter as GlowFilterArgs;
-use wgpu::util::{DeviceExt, StagingBelt};
+use wgpu::util::StagingBelt;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable, PartialEq)]
@@ -271,6 +271,7 @@ impl GlowFilter {
         &self,
         descriptors: &Descriptors,
         draw_encoder: &mut wgpu::CommandEncoder,
+        staging_belt: &mut StagingBelt,
         target: &CommandTarget,
         glows: &[(FilterSource, FilterSource, &GlowFilterArgs)],
     ) {
@@ -288,20 +289,22 @@ impl GlowFilter {
             .iter()
             .map(|(source, blurred, _)| source.vertices_with_blur_offset(blurred, (0.0, 0.0)))
             .collect();
-        let uniforms = descriptors
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: create_debug_label!("Glows").as_deref(),
-                contents: &uniforms,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let vertices = descriptors
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: create_debug_label!("Glow parts").as_deref(),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let mut scratch = descriptors.scratch.lock().expect("Scratch lock");
+        let (uniforms, uniforms_offset) = scratch.write(
+            &descriptors.device,
+            staging_belt,
+            draw_encoder,
+            &uniforms,
+            stride as u64,
+        );
+        let (vertices, vertices_offset) = scratch.write(
+            &descriptors.device,
+            staging_belt,
+            draw_encoder,
+            bytemuck::cast_slice(&vertices),
+            stride as u64,
+        );
+        drop(scratch);
         let filter_group = descriptors
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -322,7 +325,7 @@ impl GlowFilter {
                         binding: 2,
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &uniforms,
-                            offset: 0,
+                            offset: uniforms_offset,
                             size: wgpu::BufferSize::new(size as u64),
                         }),
                     },
@@ -346,7 +349,7 @@ impl GlowFilter {
         );
         let vertices_size = std::mem::size_of::<[FilterVertexWithBlur; 4]>() as u64;
         if descriptors.base_vertex {
-            render_pass.set_vertex_buffer(0, vertices.slice(..));
+            render_pass.set_vertex_buffer(0, vertices.slice(vertices_offset..));
         }
         for (i, (source, _, _)) in glows.iter().enumerate() {
             render_pass.set_viewport(
@@ -361,7 +364,10 @@ impl GlowFilter {
             if descriptors.base_vertex {
                 render_pass.draw_indexed(0..6, 4 * i as i32, 0..1);
             } else {
-                render_pass.set_vertex_buffer(0, vertices.slice(i as u64 * vertices_size..));
+                render_pass.set_vertex_buffer(
+                    0,
+                    vertices.slice(vertices_offset + i as u64 * vertices_size..),
+                );
                 render_pass.draw_indexed(0..6, 0, 0..1);
             }
         }

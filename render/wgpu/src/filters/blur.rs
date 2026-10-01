@@ -8,7 +8,7 @@ use crate::utils::SampleCountMap;
 use bytemuck::{Pod, Zeroable};
 use std::sync::OnceLock;
 use swf::BlurFilter as BlurFilterArgs;
-use wgpu::util::{DeviceExt, StagingBelt};
+use wgpu::util::StagingBelt;
 use wgpu::{BufferSlice, CommandEncoder, RenderPipeline, TextureView};
 
 /// This is a 1:1 match of `struct Filter` in `blur.wgsl`. See that, and the usage below, for more info.
@@ -562,6 +562,7 @@ impl BlurFilter {
         &self,
         descriptors: &Descriptors,
         draw_encoder: &mut wgpu::CommandEncoder,
+        staging_belt: &mut StagingBelt,
         target: &CommandTarget,
         blurs: &[(FilterSource, &BlurFilterArgs)],
     ) {
@@ -577,13 +578,13 @@ impl BlurFilter {
             uniform[..size]
                 .copy_from_slice(bytemuck::bytes_of(&Blur2dUniform::new(source, &kernels)));
         }
-        let uniforms = descriptors
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: create_debug_label!("Single pass blurs").as_deref(),
-                contents: &uniforms,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        let (uniforms, uniforms_offset) = descriptors.scratch.lock().expect("Scratch lock").write(
+            &descriptors.device,
+            staging_belt,
+            draw_encoder,
+            &uniforms,
+            stride as u64,
+        );
         let bind_group = descriptors
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -604,7 +605,7 @@ impl BlurFilter {
                         binding: 2,
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &uniforms,
-                            offset: 0,
+                            offset: uniforms_offset,
                             size: wgpu::BufferSize::new(size as u64),
                         }),
                     },
@@ -652,6 +653,7 @@ impl BlurFilter {
         &self,
         descriptors: &Descriptors,
         draw_encoder: &mut wgpu::CommandEncoder,
+        staging_belt: &mut StagingBelt,
         targets: [&CommandTarget; 2],
         blurs: &[(FilterSource, &BlurFilterArgs)],
     ) {
@@ -696,20 +698,22 @@ impl BlurFilter {
             }
             vertices.push(source.vertices());
         }
-        let uniforms = descriptors
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: create_debug_label!("Blurs").as_deref(),
-                contents: &uniforms,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let vertices = descriptors
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: create_debug_label!("Blur parts").as_deref(),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let mut scratch = descriptors.scratch.lock().expect("Scratch lock");
+        let (uniforms, uniforms_offset) = scratch.write(
+            &descriptors.device,
+            staging_belt,
+            draw_encoder,
+            &uniforms,
+            stride as u64,
+        );
+        let (vertices, vertices_offset) = scratch.write(
+            &descriptors.device,
+            staging_belt,
+            draw_encoder,
+            bytemuck::cast_slice(&vertices),
+            stride as u64,
+        );
+        drop(scratch);
         let vertices_size = std::mem::size_of::<[FilterVertex; 4]>() as u64;
         let pipeline = self.pipeline(descriptors, first.texture.sample_count());
 
@@ -739,7 +743,7 @@ impl BlurFilter {
                             binding: 2,
                             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                                 buffer: &uniforms,
-                                offset: 0,
+                                offset: uniforms_offset,
                                 size: wgpu::BufferSize::new(size as u64),
                             }),
                         },
@@ -758,7 +762,7 @@ impl BlurFilter {
                 wgpu::IndexFormat::Uint32,
             );
             if descriptors.base_vertex {
-                render_pass.set_vertex_buffer(0, vertices.slice(..));
+                render_pass.set_vertex_buffer(0, vertices.slice(vertices_offset..));
             }
             for (i, (source, filter)) in blurs.iter().enumerate() {
                 if step >= filter.num_passes() as usize * 2 {
@@ -780,7 +784,10 @@ impl BlurFilter {
                 if descriptors.base_vertex {
                     render_pass.draw_indexed(0..6, 4 * i as i32, 0..1);
                 } else {
-                    render_pass.set_vertex_buffer(0, vertices.slice(i as u64 * vertices_size..));
+                    render_pass.set_vertex_buffer(
+                        0,
+                        vertices.slice(vertices_offset + i as u64 * vertices_size..),
+                    );
                     render_pass.draw_indexed(0..6, 0, 0..1);
                 }
             }

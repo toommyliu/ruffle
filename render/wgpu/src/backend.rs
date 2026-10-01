@@ -613,6 +613,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                 &mut self
                     .profiler
                     .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
+                &mut self.active_frame.staging_belt,
                 [&steps, &blur_target],
                 &double,
             );
@@ -623,6 +624,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                 &mut self
                     .profiler
                     .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
+                &mut self.active_frame.staging_belt,
                 &blur_target,
                 &single,
             );
@@ -651,6 +653,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                 &mut self
                     .profiler
                     .scope("Glow CAB atlas", &mut self.active_frame.command_encoder),
+                &mut self.active_frame.staging_belt,
                 &glow_target,
                 &glows,
             );
@@ -1148,6 +1151,11 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         self.texture_pool.end_frame(TEXTURE_MAX_IDLE_FRAMES);
         self.mesh_buffers.end_frame();
         self.dropped_textures.destroy();
+        self.descriptors
+            .scratch
+            .lock()
+            .expect("Scratch lock")
+            .reset();
         crate::stats::set_with(&crate::stats::POOL_BYTES, || {
             self.texture_pool.idle_bytes() as i64
         });

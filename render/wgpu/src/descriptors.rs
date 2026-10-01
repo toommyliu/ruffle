@@ -1,3 +1,4 @@
+use crate::buffer_pool::ScratchBuffer;
 use crate::filters::{FilterVertex, Filters};
 use crate::layouts::BindLayouts;
 use crate::pipelines::VERTEX_BUFFERS_DESCRIPTION_POS_UV;
@@ -31,6 +32,7 @@ pub struct Descriptors {
     pub filters: Filters,
     pub complex_direct_modes: wgpu::Buffer,
     pub complex_direct_mode_stride: u32,
+    pub scratch: Mutex<ScratchBuffer>,
 }
 
 impl Debug for Descriptors {
@@ -62,6 +64,7 @@ impl Descriptors {
         for mode in 0..6 {
             modes[mode * complex_direct_mode_stride as usize / 4] = mode as u32;
         }
+        let scratch = Mutex::new(ScratchBuffer::new(&device));
         let complex_direct_modes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: create_debug_label!("Complex blend modes").as_deref(),
             contents: bytemuck::cast_slice(&modes),
@@ -86,6 +89,7 @@ impl Descriptors {
             filters,
             complex_direct_modes,
             complex_direct_mode_stride,
+            scratch,
         }
     }
 
