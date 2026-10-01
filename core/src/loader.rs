@@ -523,6 +523,46 @@ async fn wait_for_full_response(
     }
 }
 
+async fn wait_for_streamed_response(
+    player: &Mutex<Player>,
+    handle: LoaderHandle,
+    loader_url: Option<String>,
+    response: OwnedFuture<Box<dyn SuccessResponse>, ErrorResponse>,
+) -> Result<Result<(Vec<u8>, String, u16, bool), ErrorResponse>, Error> {
+    let mut response = match response.await {
+        Ok(response) => response,
+        Err(error) => return Ok(Err(error)),
+    };
+    let url = response.url().to_string();
+    let status = response.status();
+    let redirected = response.redirected();
+    let total = response
+        .expected_length()
+        .ok()
+        .flatten()
+        .map_or(0, |length| length as usize);
+    player.lock().unwrap().mutate_with_update_context(|uc| {
+        MovieLoader::movie_loader_first_progress(handle, uc, total, loader_url)
+    })?;
+
+    let mut body = Vec::new();
+    loop {
+        match response.next_chunk().await {
+            Ok(Some(chunk)) => {
+                body.extend_from_slice(&chunk);
+                let loaded = body.len();
+                if total == 0 || loaded < total {
+                    player.lock().unwrap().mutate_with_update_context(|uc| {
+                        MovieLoader::movie_loader_download_progress(handle, uc, loaded, total)
+                    })?;
+                }
+            }
+            Ok(None) => return Ok(Ok((body, url, status, redirected))),
+            Err(error) => return Ok(Err(ErrorResponse { url, error })),
+        }
+    }
+}
+
 /// The completion status of a `Loader` loading a movie.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoaderStatus {
@@ -755,7 +795,11 @@ impl<'gc> MovieLoader<'gc> {
                 MovieLoader::movie_loader_start(handle, uc)
             })?;
 
-            let response = wait_for_full_response(fetch).await;
+            let response = if replacing_root_movie {
+                wait_for_full_response(fetch).await
+            } else {
+                wait_for_streamed_response(&player, handle, loader_url.clone(), fetch).await?
+            };
             let player = player.lock().unwrap();
             match response {
                 Ok((body, url, status, redirected)) if replacing_root_movie => {
@@ -1752,24 +1796,9 @@ impl<'gc> MovieLoader<'gc> {
 
         if let MovieLoaderVMData::Avm2 { loader_info, .. } = vm_data {
             loader_info.set_content_type(sniffed_type);
-            let fake_movie = Arc::new(SwfMovie::fake_with_compressed_len(
-                uc.root_swf.version(),
-                loader_url.clone(),
-                data.len(),
-            ));
-
-            // Expose 'bytesTotal' (via the fake movie) during the first 'progress' event,
-            // but nothing else (in particular, the `parameters` and `url` properties are not set
-            // to their real values)
-            loader_info.set_loader_stream(
-                LoaderStream::NotYetLoaded(fake_movie, Some(clip), false),
-                uc.gc(),
-            );
-
-            // Flash always fires an initial 'progress' event with
-            // bytesLoaded=0 and bytesTotal set to the proper value.
-            // This only seems to happen for an AVM2 event handler
-            MovieLoader::movie_loader_progress(handle, uc, 0, length)?;
+            if from_bytes {
+                MovieLoader::movie_loader_first_progress(handle, uc, length, loader_url.clone())?;
+            }
 
             // Update the LoaderStream - we now have a real SWF movie and a real target clip
             // This is intentionally set *after* the first 'progress' event, to match Flash's behavior
@@ -2005,6 +2034,64 @@ impl<'gc> MovieLoader<'gc> {
 
         //TODO: content sniffing errors need to be reported somehow
         Ok(())
+    }
+
+    fn movie_loader_first_progress(
+        handle: LoaderHandle,
+        uc: &mut UpdateContext<'gc>,
+        total: usize,
+        loader_url: Option<String>,
+    ) -> Result<(), Error> {
+        let (clip, vm_data) = match uc.load_manager.get_loader(handle) {
+            Some(Self {
+                target_clip,
+                vm_data,
+                ..
+            }) => (*target_clip, *vm_data),
+            None => return Err(Error::Cancelled),
+        };
+
+        if let MovieLoaderVMData::Avm2 { loader_info, .. } = vm_data {
+            let fake_movie = Arc::new(SwfMovie::fake_with_compressed_len(
+                uc.root_swf.version(),
+                loader_url,
+                total,
+            ));
+
+            // Expose 'bytesTotal' (via the fake movie) during the first 'progress' event,
+            // but nothing else (in particular, the `parameters` and `url` properties are not set
+            // to their real values)
+            loader_info.set_loader_stream(
+                LoaderStream::NotYetLoaded(fake_movie, Some(clip), false),
+                uc.gc(),
+            );
+
+            // Flash always fires an initial 'progress' event with
+            // bytesLoaded=0 and bytesTotal set to the proper value.
+            // This only seems to happen for an AVM2 event handler
+            MovieLoader::movie_loader_progress(handle, uc, 0, total)?;
+        }
+
+        Ok(())
+    }
+
+    fn movie_loader_download_progress(
+        handle: LoaderHandle,
+        uc: &mut UpdateContext<'gc>,
+        loaded: usize,
+        total: usize,
+    ) -> Result<(), Error> {
+        match uc.load_manager.get_loader(handle) {
+            Some(Self {
+                vm_data: MovieLoaderVMData::Avm2 { loader_info, .. },
+                ..
+            }) => {
+                loader_info.set_bytes_downloaded(loaded);
+                MovieLoader::movie_loader_progress(handle, uc, loaded, total)
+            }
+            Some(_) => Ok(()),
+            None => Err(Error::Cancelled),
+        }
     }
 
     /// Report a movie loader progress event to script code.

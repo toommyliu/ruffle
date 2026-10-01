@@ -98,6 +98,8 @@ pub struct LoaderInfoObjectData<'gc> {
     expose_content: Cell<bool>,
 
     errored: Cell<bool>,
+
+    bytes_downloaded: Cell<usize>,
 }
 
 impl<'gc> LoaderInfoObject<'gc> {
@@ -142,6 +144,7 @@ impl<'gc> LoaderInfoObject<'gc> {
                 content_type: Cell::new(ContentType::Unknown),
                 expose_content: Cell::new(false),
                 errored: Cell::new(false),
+                bytes_downloaded: Cell::new(0),
             },
         ));
 
@@ -177,6 +180,14 @@ impl<'gc> LoaderInfoObject<'gc> {
 
     pub fn errored(self) -> bool {
         self.0.errored.get()
+    }
+
+    pub fn bytes_downloaded(self) -> usize {
+        self.0.bytes_downloaded.get()
+    }
+
+    pub fn set_bytes_downloaded(self, bytes: usize) {
+        self.0.bytes_downloaded.set(bytes);
     }
 
     pub fn init_event_fired(self) -> bool {
@@ -285,6 +296,7 @@ impl<'gc> LoaderInfoObject<'gc> {
         let loader_stream = LoaderStream::NotYetLoaded(empty_swf, None, false);
         self.set_loader_stream(loader_stream, context.gc());
         self.set_errored(false);
+        self.set_bytes_downloaded(0);
         self.reset_init_and_complete_events();
         context.load_manager.remove_finished_loads_into(self);
 

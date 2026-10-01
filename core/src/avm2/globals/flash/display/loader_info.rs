@@ -120,11 +120,13 @@ pub fn get_bytes_loaded<'gc>(
             if root.as_bitmap().is_some() {
                 return Ok(Value::from_usize_lossy(swf.compressed_len()));
             }
-            Ok(root
+            let parsed = root
                 .as_movie_clip()
-                .map(|mc| mc.compressed_loaded_bytes())
-                .unwrap_or_default()
-                .into())
+                .map(|mc| mc.compressed_loaded_bytes() as usize)
+                .unwrap_or_default();
+            Ok(Value::from_usize_lossy(
+                parsed.max(loader_info.bytes_downloaded()),
+            ))
         }
     }
 }
