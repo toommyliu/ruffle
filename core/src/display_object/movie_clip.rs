@@ -41,6 +41,7 @@ use crate::tag_utils::{self, ControlFlow, Error, SwfMovie, SwfSlice, SwfStream};
 use crate::vminterface::Instantiator;
 use bitflags::bitflags;
 use core::fmt;
+use fnv::FnvHashMap;
 use gc_arena::barrier::unlock;
 use gc_arena::lock::{Lock, RefLock};
 use gc_arena::{Collect, DynamicRoot, Gc, GcWeak, Mutation, Rootable};
@@ -183,7 +184,7 @@ pub struct MovieClipData<'gc> {
     hit_area: Lock<Option<DisplayObject<'gc>>>,
 
     /// List of tags queued up for the current frame.
-    queued_tags: RefCell<HashMap<Depth, QueuedTagList>>,
+    queued_tags: RefCell<FnvHashMap<Depth, QueuedTagList>>,
 
     /// Attached audio (AVM1)
     attached_audio: Lock<Option<NetStream<'gc>>>,
@@ -1823,7 +1824,7 @@ impl<'gc> MovieClip<'gc> {
             // but BTreeMap::retain does not exist.
             // TODO: Should AS3 children ignore GOTOs?
 
-            let final_placements: HashMap<Depth, &GotoPlaceObject<'_>> =
+            let final_placements: FnvHashMap<Depth, &GotoPlaceObject<'_>> =
                 goto_commands.iter().map(|cmd| (cmd.depth(), cmd)).collect();
 
             let children: SmallVec<[_; 16]> = self
@@ -1958,7 +1959,7 @@ impl<'gc> MovieClip<'gc> {
     fn survives_rewind(
         self,
         old_object: DisplayObject<'_>,
-        final_placements: &HashMap<Depth, &GotoPlaceObject<'_>>,
+        final_placements: &FnvHashMap<Depth, &GotoPlaceObject<'_>>,
         frame: FrameNumber,
     ) -> bool {
         // TODO [KJ] This logic is not 100% tested. It's possible it's a bit
@@ -4826,12 +4827,12 @@ struct MovieClipSharedMut {
 
     /// The tag stream start and stop positions for each frame in the clip.
     #[cfg(feature = "timeline_debug")]
-    tag_frame_boundaries: HashMap<FrameNumber, (u64, u64)>,
+    tag_frame_boundaries: FnvHashMap<FrameNumber, (u64, u64)>,
 
     // This map holds DoAbc/SymbolClass data that was loaded during preloading, but hasn't
     // yet been executed. The first time we encounter a frame, we will remove the entry
     // from this map, and process it in `run_eager_script_and_symbol`
-    eager_tags: HashMap<FrameNumber, EagerTags>,
+    eager_tags: FnvHashMap<FrameNumber, EagerTags>,
 }
 
 #[derive(Default)]
@@ -4886,7 +4887,7 @@ impl<'gc> MovieClipShared<'gc> {
         let tags = write.eager_tags.remove(&frame);
         // Optimization: free memory when the last tag is removed.
         if tags.is_some() && write.eager_tags.is_empty() {
-            write.eager_tags = HashMap::new();
+            write.eager_tags = Default::default();
         }
         tags
     }
