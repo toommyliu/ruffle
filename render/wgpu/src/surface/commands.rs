@@ -760,27 +760,33 @@ impl DrawBatch {
             let rows = height.div_ceil(BATCH_TILE_SIZE).max(1);
             self.tiles = vec![0; (self.columns * rows) as usize];
         }
-        let columns = self.columns;
-        let tile_indices = |region: &PixelRegion| {
-            let x = (region.x_min / BATCH_TILE_SIZE)..=((region.x_max - 1) / BATCH_TILE_SIZE);
-            let y = (region.y_min / BATCH_TILE_SIZE)..=((region.y_max - 1) / BATCH_TILE_SIZE);
-            y.flat_map(move |row| {
-                x.clone()
-                    .map(move |column| (row * columns + column) as usize)
-            })
+        let columns = self.columns as usize;
+        let rows = |region: &PixelRegion| {
+            let first = (region.x_min / BATCH_TILE_SIZE) as usize;
+            let last = ((region.x_max - 1) / BATCH_TILE_SIZE) as usize;
+            ((region.y_min / BATCH_TILE_SIZE) as usize
+                ..=((region.y_max - 1) / BATCH_TILE_SIZE) as usize)
+                .map(move |row| row * columns + first..=row * columns + last)
         };
         let touched = || regions.iter().filter(|region| !region.is_empty());
-        let top = touched()
-            .flat_map(tile_indices)
-            .map(|i| self.tiles[i])
-            .max();
+        let mut top = None;
+        for region in touched() {
+            for row in rows(region) {
+                let row_top = self.tiles[row].iter().fold(0, |top, &tile| top.max(tile));
+                top = top.max(Some(row_top));
+            }
+        }
         let level = match top {
             None => 0,
             Some(top) if reads_below => top,
             Some(top) => top.saturating_sub(1),
         };
-        for i in touched().flat_map(tile_indices) {
-            self.tiles[i] = self.tiles[i].max(level + 1);
+        for region in touched() {
+            for row in rows(region) {
+                for tile in &mut self.tiles[row] {
+                    *tile = (*tile).max(level + 1);
+                }
+            }
         }
         let level = usize::from(level);
         if self.levels.len() <= level {
