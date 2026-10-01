@@ -4,7 +4,7 @@ use crate::avm2::{Class as Avm2Class, Domain as Avm2Domain};
 use crate::backend::audio::SoundHandle;
 use crate::character::Character;
 
-use crate::display_object::{Bitmap, Graphic, MorphShape, Text};
+use crate::display_object::{Bitmap, CacheTextures, Graphic, MorphShape, Text};
 use crate::font::{Font, FontDescriptor, FontLike, FontQuery, FontType};
 use crate::prelude::*;
 use crate::string::AvmString;
@@ -527,6 +527,9 @@ pub struct Library<'gc> {
 
     #[collect(require_static)]
     freed_sounds: RefCell<Vec<SoundHandle>>,
+
+    #[collect(require_static)]
+    cache_textures: CacheTextures,
 }
 
 impl<'gc> Library<'gc> {
@@ -542,6 +545,7 @@ impl<'gc> Library<'gc> {
             avm2_class_registry: Default::default(),
             gc_cycles: 0,
             freed_sounds: Default::default(),
+            cache_textures: Default::default(),
         }
     }
 
@@ -883,6 +887,10 @@ impl<'gc> Library<'gc> {
 
     /// Evicts cached font resources that haven't been used, across all device
     /// fonts. Meant to be called once per rendered frame.
+    pub fn cache_textures_mut(&mut self) -> &mut CacheTextures {
+        &mut self.cache_textures
+    }
+
     pub fn sweep_font_caches(&self) {
         for font in self.device_fonts.iter_all() {
             font.sweep_caches();
