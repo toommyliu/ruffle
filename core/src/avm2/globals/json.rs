@@ -32,9 +32,9 @@ fn deserialize_json_inner<'gc>(
         }
         JsonValue::Object(js_obj) => {
             let obj = ScriptObject::new_object(activation.context);
-            for entry in js_obj.iter() {
-                let key = AvmString::new_utf8(activation.gc(), entry.0);
-                let val = deserialize_json_inner(activation, entry.1.clone(), reviver)?;
+            for (key, val) in js_obj {
+                let key = AvmString::new_utf8(activation.gc(), key);
+                let val = deserialize_json_inner(activation, val, reviver)?;
                 let args = &[key.into(), val];
 
                 let mapped_val = match reviver {
@@ -54,10 +54,10 @@ fn deserialize_json_inner<'gc>(
         }
         JsonValue::Array(js_arr) => {
             let storage = js_arr
-                .iter()
+                .into_iter()
                 .enumerate()
                 .map(|(key, val)| {
-                    let val = deserialize_json_inner(activation, val.clone(), reviver)?;
+                    let val = deserialize_json_inner(activation, val, reviver)?;
                     let args = &[Value::from_usize_lossy(key), val];
 
                     match reviver {
