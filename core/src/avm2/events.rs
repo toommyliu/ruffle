@@ -281,14 +281,14 @@ impl<'gc> DispatchList<'gc> {
     /// capture phase, or handlers that execute during the bubble and target
     /// phases.
     pub fn iter_event_handlers<'a>(
-        &'a mut self,
+        &'a self,
         event: AvmString<'gc>,
         use_capture: bool,
         mc: &'a Mutation<'gc>,
     ) -> impl 'a + Iterator<Item = FunctionObject<'gc>> {
-        self.get_event_mut(event)
-            .iter()
-            .rev()
+        self.get_event(event)
+            .into_iter()
+            .flat_map(|sheaf| sheaf.iter().rev())
             .flat_map(|(_p, v)| v.iter())
             .filter(move |eh| eh.use_capture == use_capture)
             .filter_map(move |eh| eh.handler.upgrade(mc))
@@ -424,7 +424,7 @@ fn dispatch_event_to_target<'gc>(
     let use_capture = evtmut.phase() == EventPhase::Capturing;
 
     let handlers: Vec<FunctionObject<'gc>> = dispatch_list
-        .as_dispatch_mut(activation.gc())
+        .as_dispatch()
         .expect("Internal dispatch list is missing during dispatch!")
         .iter_event_handlers(name, use_capture, activation.gc())
         .collect();
