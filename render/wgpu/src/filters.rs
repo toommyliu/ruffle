@@ -25,7 +25,7 @@ use ruffle_render::filters::Filter;
 use wgpu::util::StagingBelt;
 use wgpu::vertex_attr_array;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FilterSource<'a> {
     pub texture: &'a wgpu::Texture,
     pub view: &'a wgpu::TextureView,
@@ -70,58 +70,25 @@ impl<'a> FilterSource<'a> {
         ]
     }
 
-    pub fn vertices_with_blur_offset(&self, blur_offset: (f32, f32)) -> [FilterVertexWithBlur; 4] {
-        let source_width = self.texture.width() as f32;
-        let source_height = self.texture.height() as f32;
-        let source_left = self.point.0;
-        let source_top = self.point.1;
-        let source_right = source_left + self.size.0;
-        let source_bottom = source_top + self.size.1;
+    /// `blurred` is the blurred source: either a texture of the source's size
+    /// or the source itself.
+    pub fn vertices_with_blur_offset(
+        &self,
+        blurred: &FilterSource,
+        blur_offset: (f32, f32),
+    ) -> [FilterVertexWithBlur; 4] {
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].map(|position| FilterVertexWithBlur {
+            position,
+            source_uv: self.uv_at(position, (0.0, 0.0)),
+            blur_uv: blurred.uv_at(position, blur_offset),
+        })
+    }
+
+    fn uv_at(&self, [x, y]: [f32; 2], offset: (f32, f32)) -> [f32; 2] {
         [
-            FilterVertexWithBlur {
-                position: [0.0, 0.0],
-                source_uv: [
-                    source_left as f32 / source_width,
-                    source_top as f32 / source_height,
-                ],
-                blur_uv: [
-                    (source_left as f32 + blur_offset.0) / source_width,
-                    (source_top as f32 + blur_offset.1) / source_height,
-                ],
-            },
-            FilterVertexWithBlur {
-                position: [1.0, 0.0],
-                source_uv: [
-                    source_right as f32 / source_width,
-                    source_top as f32 / source_height,
-                ],
-                blur_uv: [
-                    (source_right as f32 + blur_offset.0) / source_width,
-                    (source_top as f32 + blur_offset.1) / source_height,
-                ],
-            },
-            FilterVertexWithBlur {
-                position: [1.0, 1.0],
-                source_uv: [
-                    source_right as f32 / source_width,
-                    source_bottom as f32 / source_height,
-                ],
-                blur_uv: [
-                    (source_right as f32 + blur_offset.0) / source_width,
-                    (source_bottom as f32 + blur_offset.1) / source_height,
-                ],
-            },
-            FilterVertexWithBlur {
-                position: [0.0, 1.0],
-                source_uv: [
-                    source_left as f32 / source_width,
-                    source_bottom as f32 / source_height,
-                ],
-                blur_uv: [
-                    (source_left as f32 + blur_offset.0) / source_width,
-                    (source_bottom as f32 + blur_offset.1) / source_height,
-                ],
-            },
+            (self.point.0 as f32 + x * self.size.0 as f32 + offset.0) / self.texture.width() as f32,
+            (self.point.1 as f32 + y * self.size.1 as f32 + offset.1)
+                / self.texture.height() as f32,
         ]
     }
 

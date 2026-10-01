@@ -174,11 +174,12 @@ impl GlowFilter {
             &filter.inner_blur_filter(),
             None,
         );
-        let blurred_view = if let Some(blurred) = &blurred {
-            blurred.ensure_cleared(draw_encoder);
-            blurred.color_view()
-        } else {
-            source.view
+        let blurred_source = match &blurred {
+            Some(blurred) => {
+                blurred.ensure_cleared(draw_encoder);
+                FilterSource::for_entire_texture(blurred.color_texture(), blurred.color_view())
+            }
+            None => *source,
         };
 
         let target = CommandTarget::new(
@@ -211,7 +212,7 @@ impl GlowFilter {
         staging_belt
             .write_buffer(draw_encoder, &self.vertex_buffer, 0, self.vertices_size)
             .copy_from_slice(bytemuck::cast_slice(&[
-                source.vertices_with_blur_offset(blur_offset)
+                source.vertices_with_blur_offset(&blurred_source, blur_offset)
             ]));
         let filter_group = descriptors
             .device
@@ -235,7 +236,7 @@ impl GlowFilter {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(blurred_view),
+                        resource: wgpu::BindingResource::TextureView(blurred_source.view),
                     },
                 ],
             });
