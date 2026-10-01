@@ -9,6 +9,7 @@ mod shader;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
+use crate::Texture;
 use crate::buffer_pool::TexturePool;
 use crate::descriptors::Descriptors;
 use crate::filters::bevel::BevelFilter;
@@ -27,14 +28,16 @@ use wgpu::vertex_attr_array;
 #[derive(Debug)]
 pub struct FilterSource<'a> {
     pub texture: &'a wgpu::Texture,
+    pub view: &'a wgpu::TextureView,
     pub point: (u32, u32),
     pub size: (u32, u32),
 }
 
 impl<'a> FilterSource<'a> {
-    pub fn for_entire_texture(texture: &'a wgpu::Texture) -> Self {
+    pub fn for_entire_texture(texture: &'a wgpu::Texture, view: &'a wgpu::TextureView) -> Self {
         Self {
             texture,
+            view,
             point: (0, 0),
             size: (texture.width(), texture.height()),
         }
@@ -219,7 +222,7 @@ impl Filters {
         staging_belt: &mut StagingBelt,
         source: FilterSource,
         filter: Filter,
-        destination: Option<&wgpu::Texture>,
+        destination: Option<&Texture>,
     ) -> CommandTarget {
         let target = match filter {
             Filter::ColorMatrixFilter(filter) => Some(descriptors.filters.color_matrix.apply(

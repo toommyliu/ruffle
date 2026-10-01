@@ -483,6 +483,7 @@ pub(super) fn run_pixelbender_shader_impl(
 
                         BitmapHandle(Arc::new(Texture {
                             texture: fresh_texture,
+                            view: Default::default(),
                             repeating_linear: Default::default(),
                             repeating_nearest: Default::default(),
                             clamped_linear: Default::default(),

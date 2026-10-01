@@ -647,6 +647,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 surface.draw_commands(
                     RenderTargetMode::ExistingWithColor(
                         texture.texture.clone(),
+                        texture.view().clone(),
                         wgpu::Color {
                             r: f64::from(entry.clear.r) / 255.0,
                             g: f64::from(entry.clear.g) / 255.0,
@@ -695,16 +696,19 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                         &mut scope.scope(filter.name()),
                         &mut self.offscreen_texture_pool,
                         &mut self.active_frame.staging_belt,
-                        FilterSource::for_entire_texture(target.color_texture()),
+                        FilterSource::for_entire_texture(
+                            target.color_texture(),
+                            target.color_view(),
+                        ),
                         filter,
-                        (i == last).then_some(&texture.texture),
+                        (i == last).then_some(texture),
                     );
                 }
                 if *target.color_texture() != texture.texture {
                     run_copy_pipeline(
                         &self.descriptors,
                         texture.texture.format(),
-                        &texture.texture.create_view(&Default::default()),
+                        texture.view(),
                         target.color_view(),
                         target.globals(),
                         target.color_texture().sample_count(),
@@ -811,6 +815,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         let bytes = u64::from(extent.width) * u64::from(extent.height) * 4;
         let handle = BitmapHandle(Arc::new(Texture {
             texture,
+            view: Default::default(),
             repeating_linear: Default::default(),
             repeating_nearest: Default::default(),
             clamped_linear: Default::default(),
@@ -987,6 +992,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             &mut self.active_frame.staging_belt,
             FilterSource {
                 texture: &source_texture.texture,
+                view: source_texture.view(),
                 point: source_point,
                 size: source_size,
             },
@@ -1098,6 +1104,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     });
                 BitmapHandle(Arc::new(Texture {
                     texture,
+                    view: Default::default(),
                     repeating_linear: Default::default(),
                     repeating_nearest: Default::default(),
                     clamped_linear: Default::default(),
@@ -1163,7 +1170,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             }),
             1,
             // When running a standalone shader, we always process the entire image
-            &FilterSource::for_entire_texture(&target_texture.texture),
+            &FilterSource::for_entire_texture(&target_texture.texture, target_texture.view()),
         )?;
 
         let index = Some(self.active_frame.submit_for_target(
@@ -1262,6 +1269,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         let bytes = u64::from(extent.width) * u64::from(extent.height) * 4;
         Ok(BitmapHandle(Arc::new(Texture {
             texture,
+            view: Default::default(),
             repeating_linear: Default::default(),
             repeating_nearest: Default::default(),
             clamped_linear: Default::default(),
@@ -1366,7 +1374,7 @@ pub enum RenderTargetMode {
     // contents of our `BitmapData` texture
     FreshWithTexture(wgpu::Texture),
     // Use the provided texture as our frame buffer, and clear it with the given color.
-    ExistingWithColor(wgpu::Texture, wgpu::Color),
+    ExistingWithColor(wgpu::Texture, wgpu::TextureView, wgpu::Color),
 }
 
 impl RenderTargetMode {
@@ -1374,7 +1382,7 @@ impl RenderTargetMode {
         match self {
             RenderTargetMode::FreshWithColor(color) => Some(*color),
             RenderTargetMode::FreshWithTexture(_) => None,
-            RenderTargetMode::ExistingWithColor(_, color) => Some(*color),
+            RenderTargetMode::ExistingWithColor(_, _, color) => Some(*color),
         }
     }
 }

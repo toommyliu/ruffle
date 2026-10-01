@@ -1,3 +1,4 @@
+use crate::Texture;
 use crate::backend::RenderTargetMode;
 use crate::buffer_pool::TexturePool;
 use crate::descriptors::Descriptors;
@@ -265,20 +266,20 @@ impl BlurFilter {
         staging_belt: &mut StagingBelt,
         source: &FilterSource,
         filter: &BlurFilterArgs,
-        destination: Option<&wgpu::Texture>,
+        destination: Option<&Texture>,
     ) -> Option<CommandTarget> {
         let sample_count = source.texture.sample_count();
         let format = source.texture.format();
         let pipeline = self.pipeline(descriptors, sample_count);
         let destination = destination.filter(|destination| {
-            destination.size()
+            destination.texture.size()
                 == wgpu::Extent3d {
                     width: source.size.0,
                     height: source.size.1,
                     depth_or_array_layers: 1,
                 }
-                && destination.format() == format
-                && destination.sample_count() == sample_count
+                && destination.texture.format() == format
+                && destination.texture.sample_count() == sample_count
         });
         let kernel_x = Kernel::new(filter.blur_x.to_f32());
         let kernel_y = Kernel::new(filter.blur_y.to_f32());
@@ -295,7 +296,7 @@ impl BlurFilter {
                     staging_belt,
                     source,
                     [kernel_x, kernel_y],
-                    destination.filter(|destination| **destination != *source.texture),
+                    destination.filter(|destination| destination.texture != *source.texture),
                 ));
             }
         }
@@ -334,7 +335,6 @@ impl BlurFilter {
             .write_buffer(draw_encoder, &self.vertex_buffer, 0, self.vertices_size)
             .copy_from_slice(bytemuck::cast_slice(&[source.vertices()]));
 
-        let source_view = source.texture.create_view(&Default::default());
         let mut first = true;
         for _ in 0..(filter.num_passes() as usize) {
             for i in 0..2 {
@@ -347,13 +347,13 @@ impl BlurFilter {
                 // The last pass can render straight into the destination, unless
                 // it reads from it (a single pass, reading the source).
                 let into_destination = destination.filter(|destination| {
-                    passes == total_passes && !(first && *destination == source.texture)
+                    passes == total_passes && !(first && destination.texture == *source.texture)
                 });
 
                 let (previous_view, previous_vertices, previous_width, previous_height) = if first {
                     first = false;
                     (
-                        &source_view,
+                        source.view,
                         self.vertex_buffer.slice(..),
                         source.texture.width() as f32,
                         source.texture.height() as f32,
@@ -388,11 +388,12 @@ impl BlurFilter {
                     let target = CommandTarget::new(
                         descriptors,
                         texture_pool,
-                        destination.size(),
+                        destination.texture.size(),
                         format,
                         sample_count,
                         RenderTargetMode::ExistingWithColor(
-                            destination.clone(),
+                            destination.texture.clone(),
+                            destination.view().clone(),
                             wgpu::Color::TRANSPARENT,
                         ),
                         draw_encoder,
@@ -440,7 +441,7 @@ impl BlurFilter {
         staging_belt: &mut StagingBelt,
         source: &FilterSource,
         [kernel_x, kernel_y]: [&Kernel; 2],
-        destination: Option<&wgpu::Texture>,
+        destination: Option<&Texture>,
     ) -> CommandTarget {
         let sample_count = source.texture.sample_count();
         let format = source.texture.format();
@@ -457,7 +458,8 @@ impl BlurFilter {
             sample_count,
             match destination {
                 Some(destination) => RenderTargetMode::ExistingWithColor(
-                    destination.clone(),
+                    destination.texture.clone(),
+                    destination.view().clone(),
                     wgpu::Color::TRANSPARENT,
                 ),
                 None => RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
@@ -478,7 +480,6 @@ impl BlurFilter {
             )
             .copy_from_slice(bytemuck::cast_slice(&[uniform]));
 
-        let source_view = source.texture.create_view(&Default::default());
         let bind_group = descriptors
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -487,7 +488,7 @@ impl BlurFilter {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source_view),
+                        resource: wgpu::BindingResource::TextureView(source.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,

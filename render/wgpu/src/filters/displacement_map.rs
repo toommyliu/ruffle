@@ -190,10 +190,8 @@ impl DisplacementMapFilter {
             RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
             draw_encoder,
         );
-        let source_view = source.texture.create_view(&Default::default());
         let map_handle = filter.map_bitmap.clone()?;
         let map_texture = as_texture(&map_handle);
-        let map_view = map_texture.texture.create_view(&Default::default());
         staging_belt
             .write_buffer(draw_encoder, &self.uniform_buffer, 0, self.uniform_size)
             .copy_from_slice(bytemuck::cast_slice(&[DisplacementMapUniform {
@@ -232,11 +230,11 @@ impl DisplacementMapFilter {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source_view),
+                        resource: wgpu::BindingResource::TextureView(source.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&map_view),
+                        resource: wgpu::BindingResource::TextureView(map_texture.view()),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,

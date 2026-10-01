@@ -290,7 +290,7 @@ impl Surface {
                         draw_encoder,
                         target.color_attachments(),
                         target.sample_count(),
-                        &FilterSource::for_entire_texture(texture.texture()),
+                        &FilterSource::for_entire_texture(texture.texture(), texture.view()),
                     )
                     .expect("Failed to run PixelBender blend mode");
                 }

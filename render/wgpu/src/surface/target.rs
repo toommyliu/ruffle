@@ -25,12 +25,9 @@ impl ResolveBuffer {
         }
     }
 
-    pub fn new_manual(texture: wgpu::Texture) -> Self {
+    pub fn new_manual(texture: wgpu::Texture, view: wgpu::TextureView) -> Self {
         Self {
-            texture: PoolOrArcTexture::Manual((
-                texture.clone(),
-                texture.create_view(&Default::default()),
-            )),
+            texture: PoolOrArcTexture::Manual((texture, view)),
         }
     }
 
@@ -101,13 +98,10 @@ impl FrameBuffer {
         }
     }
 
-    pub fn new_manual(texture: wgpu::Texture, size: wgpu::Extent3d) -> Self {
+    pub fn new_manual(texture: wgpu::Texture, view: wgpu::TextureView) -> Self {
         Self {
-            texture: PoolOrArcTexture::Manual((
-                texture.clone(),
-                texture.create_view(&Default::default()),
-            )),
-            size,
+            size: texture.size(),
+            texture: PoolOrArcTexture::Manual((texture, view)),
         }
     }
 
@@ -245,17 +239,14 @@ impl CommandTarget {
         };
 
         let (frame_buffer, resolve_buffer) =
-            if let RenderTargetMode::ExistingWithColor(texture, _) = &render_target_mode {
+            if let RenderTargetMode::ExistingWithColor(texture, view, _) = &render_target_mode {
                 if sample_count > 1 {
                     (
                         make_pooled_frame_buffer(),
-                        Some(ResolveBuffer::new_manual(texture.clone())),
+                        Some(ResolveBuffer::new_manual(texture.clone(), view.clone())),
                     )
                 } else {
-                    (
-                        FrameBuffer::new_manual(texture.clone(), texture.size()),
-                        None,
-                    )
+                    (FrameBuffer::new_manual(texture.clone(), view.clone()), None)
                 }
             } else if sample_count > 1 {
                 (

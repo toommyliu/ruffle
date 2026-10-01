@@ -110,6 +110,7 @@ impl WgpuContext3D {
             });
 
             BitmapHandle(Arc::new(Texture {
+                view: Default::default(),
                 repeating_linear: Default::default(),
                 repeating_nearest: Default::default(),
                 clamped_linear: Default::default(),
@@ -650,6 +651,7 @@ impl Context3D for WgpuContext3D {
                     // this is our resolve texture.
                     self.back_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
                         texture: back_buffer_resolve_texture.unwrap(),
+                        view: Default::default(),
                         repeating_linear: Default::default(),
                         repeating_nearest: Default::default(),
                         clamped_linear: Default::default(),
@@ -660,6 +662,7 @@ impl Context3D for WgpuContext3D {
                     }));
                     self.front_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
                         texture: front_buffer_resolve_texture.unwrap(),
+                        view: Default::default(),
                         repeating_linear: Default::default(),
                         repeating_nearest: Default::default(),
                         clamped_linear: Default::default(),
@@ -674,6 +677,7 @@ impl Context3D for WgpuContext3D {
 
                     self.back_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
                         texture: back_buffer_texture,
+                        view: Default::default(),
                         repeating_linear: Default::default(),
                         repeating_nearest: Default::default(),
                         clamped_linear: Default::default(),
@@ -684,6 +688,7 @@ impl Context3D for WgpuContext3D {
                     }));
                     self.front_buffer_raw_texture_handle = BitmapHandle(Arc::new(Texture {
                         texture: front_buffer_texture,
+                        view: Default::default(),
                         repeating_linear: Default::default(),
                         repeating_nearest: Default::default(),
                         clamped_linear: Default::default(),

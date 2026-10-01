@@ -174,14 +174,12 @@ impl BevelFilter {
             &filter.inner_blur_filter(),
             None,
         );
-        let blurred_texture = if let Some(blurred) = &blurred {
+        let blurred_view = if let Some(blurred) = &blurred {
             blurred.ensure_cleared(draw_encoder);
-            blurred.color_texture()
+            blurred.color_view()
         } else {
-            source.texture
+            source.view
         };
-        let source_view = source.texture.create_view(&Default::default());
-        let blurred_view = blurred_texture.create_view(&Default::default());
         let distance = filter.distance.to_f32();
         let angle = filter.angle.to_f32();
         let blur_offset = (angle.cos() * distance, angle.sin() * distance);
@@ -246,7 +244,7 @@ impl BevelFilter {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source_view),
+                        resource: wgpu::BindingResource::TextureView(source.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -260,7 +258,7 @@ impl BevelFilter {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&blurred_view),
+                        resource: wgpu::BindingResource::TextureView(blurred_view),
                     },
                 ],
             });

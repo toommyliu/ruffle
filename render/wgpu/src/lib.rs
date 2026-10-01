@@ -272,6 +272,7 @@ impl QueueSyncHandle {
 #[derive(Debug)]
 pub struct Texture {
     pub(crate) texture: wgpu::Texture,
+    view: OnceCell<wgpu::TextureView>,
     repeating_linear: OnceCell<BitmapBinds>,
     repeating_nearest: OnceCell<BitmapBinds>,
     clamped_linear: OnceCell<BitmapBinds>,
@@ -319,6 +320,11 @@ impl Drop for Texture {
 }
 
 impl Texture {
+    pub fn view(&self) -> &wgpu::TextureView {
+        self.view
+            .get_or_init(|| self.texture.create_view(&Default::default()))
+    }
+
     pub fn bind_group(
         &self,
         repeating: bool,
@@ -339,7 +345,7 @@ impl Texture {
                 device,
                 layout,
                 samplers.get_sampler(repeating, smoothed),
-                self.texture.create_view(&Default::default()),
+                self.view(),
                 create_debug_label!("Bitmap {:?} bind group (smoothed: {})", handle.0, smoothed),
             )
         })
