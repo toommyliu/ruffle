@@ -206,7 +206,11 @@ impl Surface {
                     );
 
                     for command in &chunk {
-                        renderer.execute(&mut render_pass.scope(command.name()), command);
+                        if cfg!(feature = "profile-with-tracy") {
+                            renderer.execute(&mut render_pass.scope(command.name()), command);
+                        } else {
+                            renderer.execute(&mut render_pass, command);
+                        }
                     }
 
                     num_masks = renderer.num_masks();
