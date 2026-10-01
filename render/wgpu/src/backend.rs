@@ -22,7 +22,7 @@ use ruffle_render::backend::{RenderBackend, ShapeHandle, ViewportDimensions};
 use ruffle_render::bitmap::{
     Bitmap, BitmapFormat, BitmapHandle, BitmapSource, PixelRegion, RgbaBufRead, SyncHandle,
 };
-use ruffle_render::commands::CommandList;
+use ruffle_render::commands::{Command, CommandList};
 use ruffle_render::error::Error as BitmapError;
 use ruffle_render::filters::Filter;
 use ruffle_render::pixel_bender::{PixelBenderShader, PixelBenderShaderHandle};
@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use swf::Color;
 use tracing::instrument;
 use wgpu::SubmissionIndex;
-use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
+use wgpu_profiler::{GpuProfiler, GpuProfilerSettings, Scope};
 
 /// Creates a wgpu instance with Ruffle's required configuration.
 ///
@@ -493,6 +493,253 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             }) => unreachable!("Buffer must be Borrowed as it was set to be Borrowed earlier"),
         }
     }
+
+    fn draw_cache_atlas(&mut self, atlas: CacheAtlas) {
+        let mut entries = atlas.entries;
+        entries.sort_by_key(|entry| std::cmp::Reverse(as_texture(&entry.handle).texture.height()));
+        let mut page = Vec::new();
+        let (mut x, mut y, mut shelf) = (0, 0, 0);
+        for entry in entries {
+            let texture = &as_texture(&entry.handle).texture;
+            let width = texture.width() + 2 * CACHE_ATLAS_GAP;
+            let height = texture.height() + 2 * CACHE_ATLAS_GAP;
+            if x + width > CACHE_ATLAS_SIZE {
+                (x, y, shelf) = (0, y + shelf, 0);
+            }
+            if y + height > CACHE_ATLAS_SIZE {
+                self.draw_cache_atlas_page(std::mem::take(&mut page));
+                (x, y, shelf) = (0, 0, 0);
+            }
+            page.push((entry, (x + CACHE_ATLAS_GAP, y + CACHE_ATLAS_GAP)));
+            x += width;
+            shelf = shelf.max(height);
+        }
+        if !page.is_empty() {
+            self.draw_cache_atlas_page(page);
+        }
+    }
+
+    fn draw_cache_atlas_page(&mut self, mut page: Vec<(BitmapCacheEntry, (u32, u32))>) {
+        let mut commands = CommandList::new();
+        for (entry, (x, y)) in &mut page {
+            offset_commands(
+                &mut entry.commands,
+                swf::Twips::from_pixels_i32(*x as i32),
+                swf::Twips::from_pixels_i32(*y as i32),
+            );
+            commands.commands.append(&mut entry.commands.commands);
+        }
+        let surface = Surface::new(
+            &self.descriptors,
+            self.surface.quality(),
+            CACHE_ATLAS_SIZE,
+            CACHE_ATLAS_SIZE,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let atlas = surface.draw_commands(
+            RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
+            &self.descriptors,
+            &self.meshes,
+            commands,
+            &mut self.active_frame.staging_belt,
+            &self.dynamic_transforms,
+            &mut self
+                .profiler
+                .scope("Draw to CAB atlas", &mut self.active_frame.command_encoder),
+            LayerRef::None,
+            &mut self.offscreen_texture_pool,
+        );
+        atlas.ensure_cleared(&mut self.active_frame.command_encoder);
+        for (entry, point) in page {
+            let texture = as_texture(&entry.handle);
+            let size = (texture.texture.width(), texture.texture.height());
+            if entry.filters.is_empty() {
+                self.active_frame.command_encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: atlas.color_texture(),
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: point.0,
+                            y: point.1,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    texture.texture.as_image_copy(),
+                    wgpu::Extent3d {
+                        width: size.0,
+                        height: size.1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            } else {
+                filter_into_cache(
+                    &self.descriptors,
+                    &mut self
+                        .profiler
+                        .scope("Filters", &mut self.active_frame.command_encoder),
+                    &mut self.offscreen_texture_pool,
+                    &mut self.active_frame.staging_belt,
+                    FilterSource {
+                        texture: atlas.color_texture(),
+                        view: atlas.color_view(),
+                        point,
+                        size,
+                        clamp_to_rect: true,
+                    },
+                    entry.filters,
+                    texture,
+                );
+            }
+            self.active_frame.maybe_flush(&self.descriptors);
+        }
+    }
+}
+
+const CACHE_ATLAS_SIZE: u32 = 1024;
+
+// A cache's texture cuts off anything drawn past its bounds; in the atlas, this
+// keeps a stray pixel or two out of the neighbouring caches.
+const CACHE_ATLAS_GAP: u32 = 2;
+
+#[derive(Default)]
+struct CacheAtlas {
+    entries: Vec<BitmapCacheEntry>,
+}
+
+impl CacheAtlas {
+    fn try_add(&mut self, entry: BitmapCacheEntry) -> Result<(), BitmapCacheEntry> {
+        if entry.clear.a != 0
+            || entry.commands.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    Command::Blend(..) | Command::RenderAlphaMask { .. }
+                )
+            })
+        {
+            return Err(entry);
+        }
+        if !entry.filters.first().is_none_or(|filter| {
+            matches!(
+                filter,
+                Filter::BlurFilter(_) | Filter::GlowFilter(_) | Filter::ColorMatrixFilter(_)
+            )
+        }) {
+            return Err(entry);
+        }
+        let texture = &as_texture(&entry.handle).texture;
+        if texture.width() + 2 * CACHE_ATLAS_GAP > CACHE_ATLAS_SIZE
+            || texture.height() + 2 * CACHE_ATLAS_GAP > CACHE_ATLAS_SIZE
+        {
+            return Err(entry);
+        }
+        self.entries.push(entry);
+        Ok(())
+    }
+
+    fn is_drawn_by(&self, commands: &CommandList) -> bool {
+        draws_bitmap(commands, &|bitmap| {
+            self.entries.iter().any(|entry| entry.handle == *bitmap)
+        })
+    }
+
+    fn draws(&self, handle: &BitmapHandle) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| draws_bitmap(&entry.commands, &|bitmap| bitmap == handle))
+    }
+}
+
+fn draws_bitmap(commands: &CommandList, matches: &impl Fn(&BitmapHandle) -> bool) -> bool {
+    commands.commands.iter().any(|command| match command {
+        Command::RenderBitmap { bitmap, .. } | Command::RenderStage3D { bitmap, .. } => {
+            matches(bitmap)
+        }
+        Command::RenderAlphaMask {
+            maskee_commands,
+            mask_commands,
+        } => draws_bitmap(maskee_commands, matches) || draws_bitmap(mask_commands, matches),
+        Command::Blend(commands, _) => draws_bitmap(commands, matches),
+        _ => false,
+    })
+}
+
+fn offset_commands(commands: &mut CommandList, x: swf::Twips, y: swf::Twips) {
+    for command in &mut commands.commands {
+        match command {
+            Command::RenderBitmap { transform, .. }
+            | Command::RenderStage3D { transform, .. }
+            | Command::RenderShape { transform, .. } => {
+                transform.matrix.tx += x;
+                transform.matrix.ty += y;
+            }
+            Command::DrawRect { matrix, .. }
+            | Command::DrawLine { matrix, .. }
+            | Command::DrawLineRect { matrix, .. } => {
+                matrix.tx += x;
+                matrix.ty += y;
+            }
+            Command::RenderAlphaMask {
+                maskee_commands,
+                mask_commands,
+            } => {
+                offset_commands(maskee_commands, x, y);
+                offset_commands(mask_commands, x, y);
+            }
+            Command::Blend(commands, _) => offset_commands(commands, x, y),
+            Command::PushMask
+            | Command::ActivateMask
+            | Command::DeactivateMask
+            | Command::PopMask => {}
+        }
+    }
+}
+
+fn filter_into_cache(
+    descriptors: &Descriptors,
+    scope: &mut Scope<'_, wgpu::CommandEncoder>,
+    texture_pool: &mut TexturePool,
+    staging_belt: &mut wgpu::util::StagingBelt,
+    source: FilterSource,
+    filters: Vec<Filter>,
+    cache: &Texture,
+) {
+    let last = filters.len() - 1;
+    let mut filters = filters.into_iter().enumerate();
+    let Some((_, first)) = filters.next() else {
+        return;
+    };
+    let mut target = descriptors.filters.apply(
+        descriptors,
+        &mut scope.scope(first.name()),
+        texture_pool,
+        staging_belt,
+        source,
+        first,
+        (last == 0).then_some(cache),
+    );
+    for (i, filter) in filters {
+        target = descriptors.filters.apply(
+            descriptors,
+            &mut scope.scope(filter.name()),
+            texture_pool,
+            staging_belt,
+            FilterSource::for_entire_texture(target.color_texture(), target.color_view()),
+            filter,
+            (i == last).then_some(cache),
+        );
+    }
+    if *target.color_texture() != cache.texture {
+        run_copy_pipeline(
+            descriptors,
+            cache.texture.format(),
+            cache.view(),
+            target.color_view(),
+            target.globals(),
+            target.color_texture().sample_count(),
+            &mut scope.scope("Copy filtered to CAB"),
+        );
+    }
 }
 
 impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
@@ -633,8 +880,20 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             return;
         };
 
+        // Caches drawn into the atlas are finished later than their turn, so a
+        // cache that another one draws mustn't be deferred past it.
+        let mut atlas = CacheAtlas::default();
         for entry in cache_entries {
             crate::stats::count(&crate::stats::CACHE_DRAWS);
+            if atlas.is_drawn_by(&entry.commands) {
+                self.draw_cache_atlas(std::mem::take(&mut atlas));
+            }
+            let Err(entry) = atlas.try_add(entry) else {
+                continue;
+            };
+            if atlas.draws(&entry.handle) {
+                self.draw_cache_atlas(std::mem::take(&mut atlas));
+            }
             let texture = as_texture(&entry.handle);
             let surface = Surface::new(
                 &self.descriptors,
@@ -673,7 +932,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 // The content goes in a pooled texture rather than the cache,
                 // so the last filter can render straight into the cache (a
                 // one-pass blur has to read somewhere else).
-                let mut target = surface.draw_commands(
+                let target = surface.draw_commands(
                     RenderTargetMode::FreshWithColor(wgpu::Color {
                         r: f64::from(entry.clear.r) / 255.0,
                         g: f64::from(entry.clear.g) / 255.0,
@@ -689,38 +948,22 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     LayerRef::None,
                     &mut self.offscreen_texture_pool,
                 );
-                let last = entry.filters.len() - 1;
-                for (i, filter) in entry.filters.into_iter().enumerate() {
-                    target = self.descriptors.filters.apply(
-                        &self.descriptors,
-                        &mut scope.scope(filter.name()),
-                        &mut self.offscreen_texture_pool,
-                        &mut self.active_frame.staging_belt,
-                        FilterSource::for_entire_texture(
-                            target.color_texture(),
-                            target.color_view(),
-                        ),
-                        filter,
-                        (i == last).then_some(texture),
-                    );
-                }
-                if *target.color_texture() != texture.texture {
-                    run_copy_pipeline(
-                        &self.descriptors,
-                        texture.texture.format(),
-                        texture.view(),
-                        target.color_view(),
-                        target.globals(),
-                        target.color_texture().sample_count(),
-                        &mut scope.scope("Copy filtered to CAB"),
-                    );
-                }
+                filter_into_cache(
+                    &self.descriptors,
+                    &mut scope,
+                    &mut self.offscreen_texture_pool,
+                    &mut self.active_frame.staging_belt,
+                    FilterSource::for_entire_texture(target.color_texture(), target.color_view()),
+                    entry.filters,
+                    texture,
+                );
             }
             // Periodically flush GPU work to prevent OOM when many cache entries
             // accumulate (e.g. when a large container's cacheAsBitmap is skipped
             // but its hundreds of children each have their own bitmap caches).
             self.active_frame.maybe_flush(&self.descriptors);
         }
+        self.draw_cache_atlas(atlas);
 
         self.surface.draw_commands_and_copy_to(
             frame_output.view(),
@@ -995,6 +1238,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 view: source_texture.view(),
                 point: source_point,
                 size: source_size,
+                clamp_to_rect: false,
             },
             filter,
             None,

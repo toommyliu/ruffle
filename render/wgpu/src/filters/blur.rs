@@ -25,6 +25,7 @@ struct BlurUniform {
     first_weight: f32,
     last_offset: f32,
     last_weight: f32,
+    uv_bounds: [f32; 4],
 }
 
 /// One direction of `struct Filter` in `blur_2d.wgsl`.
@@ -45,6 +46,9 @@ struct BlurAxis {
 struct Blur2dUniform {
     x: BlurAxis,
     y: BlurAxis,
+    uv_scale: [f32; 2],
+    uv_offset: [f32; 2],
+    uv_bounds: [f32; 4],
 }
 
 struct Kernel {
@@ -286,9 +290,7 @@ impl BlurFilter {
         if let (Some(kernel_x), Some(kernel_y)) = (&kernel_x, &kernel_y) {
             // Every vertical tap blurs a row: first, pairs, last pair (two rows).
             let samples = (kernel_y.m * 2.0 + 3.0) * (kernel_x.m + 2.0);
-            let whole_texture = source.point == (0, 0)
-                && source.size == (source.texture.width(), source.texture.height());
-            if filter.num_passes() == 1 && whole_texture && samples <= MAX_SINGLE_PASS_SAMPLES {
+            if filter.num_passes() == 1 && samples <= MAX_SINGLE_PASS_SAMPLES {
                 return Some(self.apply_single_pass(
                     descriptors,
                     texture_pool,
@@ -350,22 +352,29 @@ impl BlurFilter {
                     passes == total_passes && !(first && destination.texture == *source.texture)
                 });
 
-                let (previous_view, previous_vertices, previous_width, previous_height) = if first {
-                    first = false;
-                    (
-                        source.view,
-                        self.vertex_buffer.slice(..),
-                        source.texture.width() as f32,
-                        source.texture.height() as f32,
-                    )
-                } else {
-                    (
-                        flip.color_view(),
-                        descriptors.quad.filter_vertices.slice(..),
-                        flip.width() as f32,
-                        flip.height() as f32,
-                    )
-                };
+                let (previous_view, previous_vertices, previous_width, previous_height, uv_bounds) =
+                    if first {
+                        first = false;
+                        (
+                            source.view,
+                            self.vertex_buffer.slice(..),
+                            source.texture.width() as f32,
+                            source.texture.height() as f32,
+                            source.uv_bounds(),
+                        )
+                    } else {
+                        (
+                            flip.color_view(),
+                            descriptors.quad.filter_vertices.slice(..),
+                            flip.width() as f32,
+                            flip.height() as f32,
+                            FilterSource::for_entire_texture(
+                                flip.color_texture(),
+                                flip.color_view(),
+                            )
+                            .uv_bounds(),
+                        )
+                    };
 
                 let uniform = BlurUniform {
                     direction: if horizontal {
@@ -379,6 +388,7 @@ impl BlurFilter {
                     first_weight: kernel.first_weight,
                     last_offset: kernel.last_offset,
                     last_weight: kernel.last_weight,
+                    uv_bounds,
                 };
                 staging_belt
                     .write_buffer(draw_encoder, &self.uniform_buffer, 0, self.uniform_size)
@@ -466,9 +476,20 @@ impl BlurFilter {
             },
             draw_encoder,
         );
+        let texture_width = source.texture.width() as f32;
+        let texture_height = source.texture.height() as f32;
         let uniform = Blur2dUniform {
-            x: kernel_x.axis(source.texture.width() as f32),
-            y: kernel_y.axis(source.texture.height() as f32),
+            x: kernel_x.axis(texture_width),
+            y: kernel_y.axis(texture_height),
+            uv_scale: [
+                source.size.0 as f32 / texture_width,
+                source.size.1 as f32 / texture_height,
+            ],
+            uv_offset: [
+                source.point.0 as f32 / texture_width,
+                source.point.1 as f32 / texture_height,
+            ],
+            uv_bounds: source.uv_bounds(),
         };
         staging_belt
             .write_buffer(

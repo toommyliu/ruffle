@@ -20,6 +20,9 @@ struct Axis {
 struct Filter {
     x: Axis,
     y: Axis,
+    uv_scale: vec2<f32>,
+    uv_offset: vec2<f32>,
+    uv_bounds: vec4<f32>,
 }
 
 @group(0) @binding(0) var texture: texture_2d<f32>;
@@ -33,7 +36,12 @@ fn main_vertex(in: filter__VertexInput) -> filter__VertexOutput {
 }
 
 fn sample(uv: vec2<f32>) -> vec4<f32> {
-    return textureSampleLevel(texture, texture_sampler, uv, 0.0);
+    return textureSampleLevel(
+        texture,
+        texture_sampler,
+        clamp(uv, filter_args.uv_bounds.xy, filter_args.uv_bounds.zw),
+        0.0,
+    );
 }
 
 fn blur_row(uv: vec2<f32>) -> vec4<f32> {
@@ -54,7 +62,8 @@ fn blur_row(uv: vec2<f32>) -> vec4<f32> {
 fn main_fragment(in: filter__VertexOutput) -> @location(0) vec4<f32> {
     let b = filter_args.y;
     let step = vec2<f32>(0.0, b.step);
-    let origin = in.uv - step * (b.m2 * 0.5);
+    let uv = in.uv * filter_args.uv_scale + filter_args.uv_offset;
+    let origin = uv - step * (b.m2 * 0.5);
     var total = blur_row(origin - step) * b.first_weight;
     for (var k = 0.0; k < b.m2; k += 1.0) {
         total += blur_row(origin + step * k);

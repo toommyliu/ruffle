@@ -31,6 +31,9 @@ pub struct FilterSource<'a> {
     pub view: &'a wgpu::TextureView,
     pub point: (u32, u32),
     pub size: (u32, u32),
+    /// Whether filters may read only `point` and `size`, not the rest of the
+    /// texture.
+    pub clamp_to_rect: bool,
 }
 
 impl<'a> FilterSource<'a> {
@@ -40,7 +43,26 @@ impl<'a> FilterSource<'a> {
             view,
             point: (0, 0),
             size: (texture.width(), texture.height()),
+            clamp_to_rect: false,
         }
+    }
+
+    /// The texture coordinates of the outermost texel centers filters may read.
+    /// Clamping to texel centers samples like clamp-to-edge addressing.
+    pub fn uv_bounds(&self) -> [f32; 4] {
+        let width = self.texture.width();
+        let height = self.texture.height();
+        let (point, size) = if self.clamp_to_rect {
+            (self.point, self.size)
+        } else {
+            ((0, 0), (width, height))
+        };
+        [
+            (point.0 as f32 + 0.5) / width as f32,
+            (point.1 as f32 + 0.5) / height as f32,
+            ((point.0 + size.0) as f32 - 0.5) / width as f32,
+            ((point.1 + size.1) as f32 - 0.5) / height as f32,
+        ]
     }
 
     pub fn vertices(&self) -> [FilterVertex; 4] {

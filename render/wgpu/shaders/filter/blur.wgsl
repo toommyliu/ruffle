@@ -21,6 +21,8 @@ struct Filter {
     // These control the fused sampling of the last pixel pair.
     last_offset: f32,
     last_weight: f32,
+
+    uv_bounds: vec4<f32>,
 }
 
 @group(0) @binding(0) var texture: texture_2d<f32>;
@@ -47,7 +49,7 @@ fn main_fragment(in: filter__VertexOutput) -> @location(0) vec4<f32> {
     var total = vec4<f32>(0.0);
 
     // The first (potentially fractional) pixel, to the left of the trivial pixel pairs.
-    total += textureSample(texture, texture_sampler, in.uv - direction) * filter_args.first_weight;
+    total += textureSample(texture, texture_sampler, clamp(in.uv - direction, filter_args.uv_bounds.xy, filter_args.uv_bounds.zw)) * filter_args.first_weight;
 
     var center = vec4<f32>();
     for (var i = 0.5; i < filter_args.m2; i += 2.0) {
@@ -56,13 +58,13 @@ fn main_fragment(in: filter__VertexOutput) -> @location(0) vec4<f32> {
         // The +0.5 offset is baked right into i. This doesn't affect the
         // iteration (which has a granularity of 2.0, and is open-ended),
         // but saves an addition here in the loop body.
-        center += textureSample(texture, texture_sampler, in.uv + direction * i);
+        center += textureSample(texture, texture_sampler, clamp(in.uv + direction * i, filter_args.uv_bounds.xy, filter_args.uv_bounds.zw));
     }
     total += center * 2.0;
 
     // The last pixel pair, the second of which may have fractional weight, sampled together.
     let last_location = in.uv + direction * (filter_args.m2 + filter_args.last_offset);
-    total += textureSample(texture, texture_sampler, last_location) * filter_args.last_weight;
+    total += textureSample(texture, texture_sampler, clamp(last_location, filter_args.uv_bounds.xy, filter_args.uv_bounds.zw)) * filter_args.last_weight;
 
     // The sum of every weight is full_size.
     let result = total / filter_args.full_size;
