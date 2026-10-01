@@ -265,7 +265,7 @@ impl Avm2ObjectWindow {
     ) {
         let mut entries: Vec<(Cow<'gc, str>, Namespace<'gc>, Property)> = object
             .vtable()
-            .resolved_traits()
+            .resolved_traits(activation.gc())
             .iter()
             .map(|(name, ns, prop)| (name.as_wstr().to_utf8_lossy(), ns, *prop))
             .collect();

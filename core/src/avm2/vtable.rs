@@ -4,7 +4,7 @@ use crate::avm2::metadata::Metadata;
 use crate::avm2::method::Method;
 use crate::avm2::object::{ClassObject, FunctionObject};
 use crate::avm2::property::{Property, PropertyClass};
-use crate::avm2::property_map::PropertyMap;
+use crate::avm2::property_map::{LayeredPropertyMap, PropertyMap};
 use crate::avm2::scope::ScopeChain;
 use crate::avm2::traits::{Trait, TraitKind};
 use crate::avm2::value::Value;
@@ -27,7 +27,9 @@ struct VTableData<'gc> {
 
     protected_namespace: Option<Namespace<'gc>>,
 
-    resolved_traits: PropertyMap<'gc, Property>,
+    resolved_traits: LayeredPropertyMap<'gc, Property>,
+
+    flattened_traits: Lock<Option<Gc<'gc, PropertyMap<'gc, Property>>>>,
 
     /// Use hashmaps for the metadata tables because metadata will rarely be present on traits
     slot_metadata_table: HashMap<usize, Box<[Metadata<'gc>]>>,
@@ -89,6 +91,7 @@ impl<'gc> VTable<'gc> {
             super_class_obj,
             scope,
             superclass_vtable,
+            mc,
         )?;
         Ok(VTable(Gc::new(mc, this)))
     }
@@ -106,14 +109,24 @@ impl<'gc> VTable<'gc> {
             super_class_obj,
             scope,
             superclass_vtable,
+            context.gc(),
         )?;
         Self::copy_interface_properties(&mut this, defining_class_def, context);
 
         Ok(VTable(Gc::new(context.gc(), this)))
     }
 
-    pub fn resolved_traits(self) -> &'gc PropertyMap<'gc, Property> {
-        &Gc::as_ref(self.0).resolved_traits
+    pub fn resolved_traits(self, mc: &Mutation<'gc>) -> &'gc PropertyMap<'gc, Property> {
+        Gc::as_ref(self.flattened_traits(mc))
+    }
+
+    fn flattened_traits(self, mc: &Mutation<'gc>) -> Gc<'gc, PropertyMap<'gc, Property>> {
+        if let Some(traits) = self.0.flattened_traits.get() {
+            return traits;
+        }
+        let traits = self.0.resolved_traits.flatten(mc);
+        unlock!(Gc::write(mc, self.0), VTableData, flattened_traits).set(Some(traits));
+        traits
     }
 
     pub fn get_metadata_for_slot(self, slot_id: usize) -> Option<&'gc [Metadata<'gc>]> {
@@ -149,7 +162,7 @@ impl<'gc> VTable<'gc> {
             return None;
         }
 
-        self.resolved_traits().get_for_multiname(name).cloned()
+        self.0.resolved_traits.get_for_multiname(name).cloned()
     }
 
     /// Coerces `value` to the type of the slot with id `slot_id`
@@ -172,7 +185,7 @@ impl<'gc> VTable<'gc> {
     }
 
     pub fn has_trait(self, name: &Multiname<'gc>) -> bool {
-        self.resolved_traits().get_for_multiname(name).is_some()
+        self.0.resolved_traits.get_for_multiname(name).is_some()
     }
 
     pub fn get_method(self, disp_id: usize) -> Option<Method<'gc>> {
@@ -218,6 +231,7 @@ impl<'gc> VTable<'gc> {
         super_class_obj: Option<ClassObject<'gc>>,
         scope: Option<ScopeChain<'gc>>,
         superclass_vtable: Option<Self>,
+        mc: &Mutation<'gc>,
     ) -> Result<VTableData<'gc>, VTableInitError> {
         // Let's talk about slot_ids and disp_ids.
         // Specification is one thing, but reality is another.
@@ -270,7 +284,8 @@ impl<'gc> VTable<'gc> {
         // so long-term it's still something we should verify.
         // (and it's far from the only verification check we lack anyway)
 
-        let mut resolved_traits = PropertyMap::new();
+        let mut resolved_traits =
+            LayeredPropertyMap::new(superclass_vtable.map(|vtable| vtable.flattened_traits(mc)));
         let mut slot_metadata_table = HashMap::new();
         let mut disp_metadata_table = HashMap::new();
         let mut slot_table = Vec::new();
@@ -284,7 +299,6 @@ impl<'gc> VTable<'gc> {
         let mut force_auto_assign_slots = false;
 
         if let Some(superclass_vtable) = superclass_vtable {
-            resolved_traits = superclass_vtable.resolved_traits().clone();
             slot_metadata_table = superclass_vtable.0.slot_metadata_table.clone();
             disp_metadata_table = superclass_vtable.0.disp_metadata_table.clone();
             slot_table.extend_from_slice(&superclass_vtable.0.slot_table);
@@ -297,7 +311,7 @@ impl<'gc> VTable<'gc> {
             {
                 // Copy all protected traits from superclass
                 // but with this class's protected namespace
-                for (local_name, ns, prop) in superclass_vtable.resolved_traits().iter() {
+                for (local_name, ns, prop) in superclass_vtable.resolved_traits(mc).iter() {
                     if ns.exact_version_match(super_protected_namespace) {
                         let new_name = QName::new(protected_namespace, local_name);
                         resolved_traits.insert(new_name, *prop);
@@ -526,6 +540,7 @@ impl<'gc> VTable<'gc> {
             scope,
             protected_namespace: defining_class_def.protected_namespace(),
             resolved_traits,
+            flattened_traits: Lock::new(None),
             slot_metadata_table,
             disp_metadata_table,
             slot_table: slot_table.into_boxed_slice(),
@@ -597,8 +612,11 @@ impl<'gc> VTable<'gc> {
         )
     }
 
-    pub fn public_properties(self) -> impl Iterator<Item = (AvmString<'gc>, Property)> {
-        self.resolved_traits()
+    pub fn public_properties(
+        self,
+        mc: &Mutation<'gc>,
+    ) -> impl Iterator<Item = (AvmString<'gc>, Property)> {
+        self.resolved_traits(mc)
             .iter()
             .filter(|(_, ns, _)| ns.is_public())
             .map(|(name, _, prop)| (name, *prop))

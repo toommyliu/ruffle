@@ -166,7 +166,7 @@ fn describe_internal_body<'gc>(
     // https://github.com/adobe/avmplus/blob/858d034a3bd3a54d9b70909386435cf4aec81d21/core/TypeDescriber.cpp#L237
     let mut skip_ns: Vec<Namespace<'_>> = Vec::new();
     if let Some(super_vtable) = super_vtable {
-        for (_, ns, prop) in super_vtable.resolved_traits().iter() {
+        for (_, ns, prop) in super_vtable.resolved_traits(mc).iter() {
             if !ns.as_uri(&mut context.strings).is_empty()
                 && let Property::Method { .. } = prop
                 && !skip_ns
@@ -180,7 +180,7 @@ fn describe_internal_body<'gc>(
 
     // FIXME - avmplus iterates over their own hashtable, so the order in the final XML
     // is different
-    for (prop_name, ns, prop) in vtable.resolved_traits().iter() {
+    for (prop_name, ns, prop) in vtable.resolved_traits(mc).iter() {
         if !ns.is_public_ignoring_ns() {
             continue;
         }

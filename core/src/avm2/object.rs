@@ -667,7 +667,7 @@ pub trait TObject<'gc>: 'gc + Collect<'gc> + Debug + Into<Object<'gc>> + Clone +
         let mut values = Vec::new();
 
         // First slots...
-        for (name, prop) in vtable.public_properties() {
+        for (name, prop) in vtable.public_properties(activation.gc()) {
             if let Property::Slot { slot_id } | Property::ConstSlot { slot_id } = prop {
                 let value = self.base().get_slot(slot_id);
                 values.push((name, value));
@@ -675,7 +675,7 @@ pub trait TObject<'gc>: 'gc + Collect<'gc> + Debug + Into<Object<'gc>> + Clone +
         }
 
         // ...then getters.
-        for (name, prop) in vtable.public_properties() {
+        for (name, prop) in vtable.public_properties(activation.gc()) {
             if let Property::Virtual { get: Some(get), .. } = prop {
                 let value = Value::from(*self).call_method(get, &[], activation)?;
                 values.push((name, value));
