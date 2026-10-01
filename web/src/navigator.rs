@@ -29,8 +29,8 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use wasm_streams::readable::ReadableStream;
 use web_sys::{
-    Blob, BlobPropertyBag, HtmlFormElement, HtmlInputElement, Request as WebRequest,
-    RequestCredentials, RequestInit, Response as WebResponse, window,
+    AbortController, Blob, BlobPropertyBag, HtmlFormElement, HtmlInputElement,
+    Request as WebRequest, RequestCredentials, RequestInit, Response as WebResponse, window,
 };
 
 /// The handling mode of links opening a new website.
@@ -343,6 +343,12 @@ impl NavigatorBackend for WebNavigatorBackend {
             init.set_method(&request.method().to_string());
             init.set_credentials(credentials);
 
+            let abort = AbortOnDrop(AbortController::new().map_err(|_| ErrorResponse {
+                url: url.to_string(),
+                error: Error::FetchError("Got JS error".to_string()),
+            })?);
+            init.set_signal(Some(&abort.0.signal()));
+
             if let Some((data, mime)) = request.body() {
                 let options = BlobPropertyBag::new();
                 options.set_type(mime);
@@ -424,6 +430,7 @@ impl NavigatorBackend for WebNavigatorBackend {
                 rewritten_url: None,
                 response,
                 body_stream: None,
+                _abort: abort,
             });
 
             Ok(wrapper)
@@ -569,10 +576,19 @@ impl NavigatorBackend for WebNavigatorBackend {
     }
 }
 
+struct AbortOnDrop(AbortController);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct WebResponseWrapper {
     rewritten_url: Option<String>,
     response: WebResponse,
     body_stream: Option<Rc<RefCell<ReadableStream>>>,
+    _abort: AbortOnDrop,
 }
 
 impl SuccessResponse for WebResponseWrapper {
