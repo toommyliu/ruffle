@@ -10,7 +10,7 @@ use crate::utils::SampleCountMap;
 use bytemuck::{Pod, Zeroable};
 use std::sync::OnceLock;
 use swf::GlowFilter as GlowFilterArgs;
-use wgpu::util::StagingBelt;
+use wgpu::util::{DeviceExt, StagingBelt};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable, PartialEq)]
@@ -20,6 +20,23 @@ struct GlowUniform {
     inner: u32,            // a wasteful bool, but we need to be aligned anyway
     knockout: u32,         // a wasteful bool, but we need to be aligned anyway
     composite_source: u32, // undocumented flash feature, another bool
+}
+
+impl GlowUniform {
+    fn new(filter: &GlowFilterArgs) -> Self {
+        Self {
+            color: [
+                f32::from(filter.color.r) / 255.0,
+                f32::from(filter.color.g) / 255.0,
+                f32::from(filter.color.b) / 255.0,
+                f32::from(filter.color.a) / 255.0,
+            ],
+            strength: filter.strength.to_f32(),
+            inner: if filter.is_inner() { 1 } else { 0 },
+            knockout: if filter.is_knockout() { 1 } else { 0 },
+            composite_source: if filter.composite_source() { 1 } else { 0 },
+        }
+    }
 }
 
 pub struct GlowFilter {
@@ -58,7 +75,7 @@ impl GlowFilter {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: wgpu::BufferSize::new(uniform_size),
                     },
                     count: None,
@@ -197,18 +214,7 @@ impl GlowFilter {
         );
         staging_belt
             .write_buffer(draw_encoder, &self.uniform_buffer, 0, self.uniform_size)
-            .copy_from_slice(bytemuck::cast_slice(&[GlowUniform {
-                color: [
-                    f32::from(filter.color.r) / 255.0,
-                    f32::from(filter.color.g) / 255.0,
-                    f32::from(filter.color.b) / 255.0,
-                    f32::from(filter.color.a) / 255.0,
-                ],
-                strength: filter.strength.to_f32(),
-                inner: if filter.is_inner() { 1 } else { 0 },
-                knockout: if filter.is_knockout() { 1 } else { 0 },
-                composite_source: if filter.composite_source() { 1 } else { 0 },
-            }]));
+            .copy_from_slice(bytemuck::cast_slice(&[GlowUniform::new(filter)]));
         staging_belt
             .write_buffer(draw_encoder, &self.vertex_buffer, 0, self.vertices_size)
             .copy_from_slice(bytemuck::cast_slice(&[
@@ -248,7 +254,7 @@ impl GlowFilter {
         });
         render_pass.set_pipeline(pipeline);
 
-        render_pass.set_bind_group(0, &filter_group, &[]);
+        render_pass.set_bind_group(0, &filter_group, &[0]);
 
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(
@@ -257,5 +263,107 @@ impl GlowFilter {
         );
         render_pass.draw_indexed(0..6, 0, 0..1);
         target
+    }
+
+    /// Glows parts of one texture whose blurred copies are parts of another,
+    /// into the same places in `target`, in one render pass.
+    pub fn apply_in_place(
+        &self,
+        descriptors: &Descriptors,
+        draw_encoder: &mut wgpu::CommandEncoder,
+        target: &CommandTarget,
+        glows: &[(FilterSource, FilterSource, &GlowFilterArgs)],
+    ) {
+        let Some((first, first_blurred, _)) = glows.first() else {
+            return;
+        };
+        let size = std::mem::size_of::<GlowUniform>();
+        let stride =
+            size.next_multiple_of(descriptors.limits.min_uniform_buffer_offset_alignment as usize);
+        let mut uniforms = vec![0; stride * glows.len()];
+        for ((_, _, filter), uniform) in glows.iter().zip(uniforms.chunks_mut(stride)) {
+            uniform[..size].copy_from_slice(bytemuck::bytes_of(&GlowUniform::new(filter)));
+        }
+        let vertices: Vec<_> = glows
+            .iter()
+            .map(|(source, blurred, _)| source.vertices_with_blur_offset(blurred, (0.0, 0.0)))
+            .collect();
+        let uniforms = descriptors
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: create_debug_label!("Glows").as_deref(),
+                contents: &uniforms,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let vertices = descriptors
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: create_debug_label!("Glow parts").as_deref(),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let filter_group = descriptors
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: create_debug_label!("Glows group").as_deref(),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(first.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            descriptors.bitmap_samplers.get_sampler(false, false),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &uniforms,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(size as u64),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(first_blurred.view),
+                    },
+                ],
+            });
+
+        crate::backend::count_render_pass(crate::stats::PassKind::Filter);
+        let mut render_pass = draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: create_debug_label!("Glow filters").as_deref(),
+            color_attachments: &[target.color_attachments()],
+            ..Default::default()
+        });
+        render_pass.set_pipeline(self.pipeline(descriptors, first.texture.sample_count()));
+        render_pass.set_index_buffer(
+            descriptors.quad.indices.slice(..),
+            wgpu::IndexFormat::Uint32,
+        );
+        let vertices_size = std::mem::size_of::<[FilterVertexWithBlur; 4]>() as u64;
+        if descriptors.base_vertex {
+            render_pass.set_vertex_buffer(0, vertices.slice(..));
+        }
+        for (i, (source, _, _)) in glows.iter().enumerate() {
+            render_pass.set_viewport(
+                source.point.0 as f32,
+                source.point.1 as f32,
+                source.size.0 as f32,
+                source.size.1 as f32,
+                0.0,
+                1.0,
+            );
+            render_pass.set_bind_group(0, &filter_group, &[(i * stride) as u32]);
+            if descriptors.base_vertex {
+                render_pass.draw_indexed(0..6, 4 * i as i32, 0..1);
+            } else {
+                render_pass.set_vertex_buffer(0, vertices.slice(i as u64 * vertices_size..));
+                render_pass.draw_indexed(0..6, 0, 0..1);
+            }
+        }
     }
 }

@@ -551,21 +551,49 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             &mut self.offscreen_texture_pool,
         );
         atlas.ensure_cleared(&mut self.active_frame.command_encoder);
-        let part = |point: (u32, u32), cache: &Texture| FilterSource {
-            texture: atlas.color_texture(),
-            view: atlas.color_view(),
-            point,
-            size: (cache.texture.width(), cache.texture.height()),
-            clamp_to_rect: true,
-        };
 
         let blur = &self.descriptors.filters.blur;
-        let (single, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
-            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if blur.is_single_pass(filter))
+        let batched =
+            |filter: &swf::BlurFilter| blur.is_single_pass(filter) || blur.is_two_pass(filter);
+        let (blurred, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
+            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if batched(filter))
         });
-        let (double, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
-            matches!(entry.filters.as_slice(), [Filter::BlurFilter(filter)] if blur.is_two_pass(filter))
+        let (glowed, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
+            matches!(entry.filters.as_slice(), [Filter::GlowFilter(filter)] if batched(&filter.inner_blur_filter()))
         });
+        let inner_blurs: Vec<_> = glowed
+            .iter()
+            .map(|(entry, _)| match &entry.filters[0] {
+                Filter::GlowFilter(filter) => filter.inner_blur_filter(),
+                _ => unreachable!("Only glowing entries"),
+            })
+            .collect();
+        let blurs = blurred
+            .iter()
+            .map(|(entry, point)| match &entry.filters[0] {
+                Filter::BlurFilter(filter) => (
+                    atlas_part(&atlas, *point, as_texture(&entry.handle)),
+                    filter,
+                ),
+                _ => unreachable!("Only blurred entries"),
+            })
+            .chain(
+                glowed
+                    .iter()
+                    .zip(&inner_blurs)
+                    .map(|((entry, point), filter)| {
+                        (
+                            atlas_part(&atlas, *point, as_texture(&entry.handle)),
+                            filter,
+                        )
+                    }),
+            );
+        let (single, double): (Vec<_>, Vec<_>) =
+            blurs.partition(|(_, filter)| blur.is_single_pass(filter));
+        if single.is_empty() && double.is_empty() {
+            return self.filter_parts(&atlas, page);
+        }
+
         let new_target = |this: &mut Self| {
             CommandTarget::new(
                 &this.descriptors,
@@ -577,31 +605,62 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                 &mut this.active_frame.command_encoder,
             )
         };
-        if !single.is_empty() {
-            let target = new_target(self);
-            self.descriptors.filters.blur.apply_single_pass_in_place(
-                &self.descriptors,
-                &mut self
-                    .profiler
-                    .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
-                &target,
-                &atlas_blurs(&atlas, &single),
-            );
-            self.copy_parts(target.color_texture(), &single);
-        }
+        let blur_target = new_target(self);
         if !double.is_empty() {
-            let targets = [new_target(self), new_target(self)];
+            let steps = new_target(self);
             self.descriptors.filters.blur.apply_two_pass_in_place(
                 &self.descriptors,
                 &mut self
                     .profiler
                     .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
-                [&targets[0], &targets[1]],
-                &atlas_blurs(&atlas, &double),
+                [&steps, &blur_target],
+                &double,
             );
-            self.copy_parts(targets[1].color_texture(), &double);
+        }
+        if !single.is_empty() {
+            self.descriptors.filters.blur.apply_single_pass_in_place(
+                &self.descriptors,
+                &mut self
+                    .profiler
+                    .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
+                &blur_target,
+                &single,
+            );
+        }
+        self.copy_parts(blur_target.color_texture(), &blurred);
+
+        if !glowed.is_empty() {
+            let glow_target = new_target(self);
+            let glows: Vec<_> = glowed
+                .iter()
+                .map(|(entry, point)| {
+                    let Filter::GlowFilter(filter) = &entry.filters[0] else {
+                        unreachable!("Only glowing entries")
+                    };
+                    let source = atlas_part(&atlas, *point, as_texture(&entry.handle));
+                    let blurred = FilterSource {
+                        texture: blur_target.color_texture(),
+                        view: blur_target.color_view(),
+                        ..source
+                    };
+                    (source, blurred, filter)
+                })
+                .collect();
+            self.descriptors.filters.glow.apply_in_place(
+                &self.descriptors,
+                &mut self
+                    .profiler
+                    .scope("Glow CAB atlas", &mut self.active_frame.command_encoder),
+                &glow_target,
+                &glows,
+            );
+            self.copy_parts(glow_target.color_texture(), &glowed);
         }
 
+        self.filter_parts(&atlas, page);
+    }
+
+    fn filter_parts(&mut self, atlas: &CommandTarget, page: Vec<(BitmapCacheEntry, (u32, u32))>) {
         for (entry, point) in page {
             let texture = as_texture(&entry.handle);
             if entry.filters.is_empty() {
@@ -619,7 +678,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                         .scope("Filters", &mut self.active_frame.command_encoder),
                     &mut self.offscreen_texture_pool,
                     &mut self.active_frame.staging_belt,
-                    part(point, texture),
+                    atlas_part(atlas, point, texture),
                     entry.filters,
                     texture,
                 );
@@ -740,27 +799,18 @@ fn offset_commands(commands: &mut CommandList, x: swf::Twips, y: swf::Twips) {
     }
 }
 
-fn atlas_blurs<'a>(
+fn atlas_part<'a>(
     atlas: &'a CommandTarget,
-    entries: &'a [(BitmapCacheEntry, (u32, u32))],
-) -> Vec<(FilterSource<'a>, &'a swf::BlurFilter)> {
-    entries
-        .iter()
-        .map(|(entry, point)| {
-            let Filter::BlurFilter(filter) = &entry.filters[0] else {
-                unreachable!("Only blurred entries")
-            };
-            let texture = &as_texture(&entry.handle).texture;
-            let source = FilterSource {
-                texture: atlas.color_texture(),
-                view: atlas.color_view(),
-                point: *point,
-                size: (texture.width(), texture.height()),
-                clamp_to_rect: true,
-            };
-            (source, filter)
-        })
-        .collect()
+    point: (u32, u32),
+    cache: &Texture,
+) -> FilterSource<'a> {
+    FilterSource {
+        texture: atlas.color_texture(),
+        view: atlas.color_view(),
+        point,
+        size: (cache.texture.width(), cache.texture.height()),
+        clamp_to_rect: true,
+    }
 }
 
 fn copy_part(
