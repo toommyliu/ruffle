@@ -8,7 +8,7 @@ use crate::avm2::function::FunctionArgs;
 use crate::avm2::globals::array::ArrayIter;
 use crate::avm2::object::{ArrayObject, FunctionObject, Object, ScriptObject, TObject};
 use crate::avm2::parameters::ParametersExt;
-use crate::avm2::value::Value;
+use crate::avm2::value::{Value, f64_to_string_finite_nonzero};
 use crate::string::{AvmString, Units};
 use ruffle_macros::istr;
 use serde::Serialize;
@@ -262,7 +262,11 @@ impl<'gc, F: Formatter> AvmSerializer<'gc, F> {
         match value.normalize() {
             Value::Null | Value::Undefined => self.write_scalar(()),
             Value::Integer(i) => self.write_scalar(i),
-            Value::Number(n) => self.write_scalar(n),
+            Value::Number(0.0) => self.out.push(b'0'),
+            Value::Number(n) if n.is_finite() => self
+                .out
+                .extend_from_slice(f64_to_string_finite_nonzero(n).as_bytes()),
+            Value::Number(_) => self.write_scalar(()),
             Value::Bool(b) => self.write_scalar(b),
             Value::String(s) => self.write_scalar(&*s.to_utf8_lossy()),
             Value::Object(obj) => {
