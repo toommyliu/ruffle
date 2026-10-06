@@ -55,6 +55,10 @@ impl BufferBuilder {
         &self.inner
     }
 
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.inner
+    }
+
     pub fn copy_to(
         self,
         staging_belt: &mut wgpu::util::StagingBelt,

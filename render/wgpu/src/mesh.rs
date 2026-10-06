@@ -156,6 +156,17 @@ pub enum PendingDrawType {
     },
 }
 
+impl PendingDrawType {
+    pub fn vertex_size(&self) -> wgpu::BufferAddress {
+        match self {
+            PendingDrawType::Color => size_of::<PosColorVertex>() as wgpu::BufferAddress,
+            PendingDrawType::Gradient { .. } | PendingDrawType::Bitmap { .. } => {
+                size_of::<PosUvVertex>() as wgpu::BufferAddress
+            }
+        }
+    }
+}
+
 /// Converts an RGBA color from sRGB space to linear color space.
 fn srgb_to_linear(color: f32) -> f32 {
     if color <= 0.04045 {

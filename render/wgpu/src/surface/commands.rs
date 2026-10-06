@@ -391,11 +391,16 @@ impl<'encoder> CommandRenderer<'encoder> {
                 / wgpu::BufferAddress::from(mesh.index_format.byte_size()))
                 as u32;
             let indices = first_index..first_index + num_indices;
+            let vertex_offset = if self.descriptors.base_vertex {
+                draw.vertices.start
+            } else {
+                0
+            };
             if let DrawType::Color = draw.draw_type {
                 self.draw::<PosColorVertex>(
                     render_pass,
                     &mesh.vertex_buffer,
-                    draw.vertices.start,
+                    vertex_offset,
                     &mesh.index_buffer,
                     mesh.index_format,
                     indices,
@@ -405,7 +410,7 @@ impl<'encoder> CommandRenderer<'encoder> {
                 self.draw::<PosUvVertex>(
                     render_pass,
                     &mesh.vertex_buffer,
-                    draw.vertices.start,
+                    vertex_offset,
                     &mesh.index_buffer,
                     mesh.index_format,
                     indices,

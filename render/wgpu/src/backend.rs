@@ -371,10 +371,11 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             ));
         }
 
-        let index_format = if lyon_mesh
-            .draws
-            .iter()
-            .all(|draw| draw.vertices.len() <= usize::from(u16::MAX) + 1)
+        let index_format = if self.descriptors.base_vertex
+            && lyon_mesh
+                .draws
+                .iter()
+                .all(|draw| draw.vertices.len() <= usize::from(u16::MAX) + 1)
         {
             wgpu::IndexFormat::Uint16
         } else {
@@ -407,6 +408,18 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             .mesh_buffers
             .vertices
             .allocate(device, queue, vertex_buffer.bytes());
+        if !self.descriptors.base_vertex {
+            // Without `base_vertex`, indices count from the start of the shared vertex buffer,
+            // so that draws can all bind it at the same offset.
+            for draw in &draws {
+                let first_vertex = ((vertices.offset() + draw.vertices.start)
+                    / draw.draw_type.vertex_size()) as u32;
+                let range = draw.indices.start as usize..draw.indices.end as usize;
+                for index in index_buffer.bytes_mut()[range].as_chunks_mut::<4>().0 {
+                    *index = (u32::from_ne_bytes(*index) + first_vertex).to_ne_bytes();
+                }
+            }
+        }
         let indices = self
             .mesh_buffers
             .indices
