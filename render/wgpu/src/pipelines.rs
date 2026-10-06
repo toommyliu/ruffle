@@ -67,15 +67,18 @@ pub struct Pipelines {
     gradients: EnumMap<TrivialBlend, ShapePipeline>,
     pub complex_blends: EnumMap<ComplexBlend, ShapePipeline>,
     pub alpha_mask: ShapePipeline,
-    multiply: Option<MultiplyPipelines>,
+    /// With dual-source blending, the whole blend; without it, the first of
+    /// two draws.
+    multiply: MultiplyPipelines,
+    multiply_second_step: Option<MultiplyPipelines>,
     complex_direct: MultiplyPipelines,
 }
 
 #[derive(Debug)]
-struct MultiplyPipelines {
-    color: ShapePipeline,
-    gradient: ShapePipeline,
-    bitmap: ShapePipeline,
+pub struct MultiplyPipelines {
+    pub color: ShapePipeline,
+    pub gradient: ShapePipeline,
+    pub bitmap: ShapePipeline,
 }
 
 impl ShapePipeline {
@@ -164,7 +167,7 @@ impl Pipelines {
     pub fn color(&self, blend: DirectBlend) -> &ShapePipeline {
         match blend {
             DirectBlend::Trivial(blend) => &self.color[blend],
-            DirectBlend::Multiply => &self.multiply().color,
+            DirectBlend::Multiply => &self.multiply.color,
             DirectBlend::Complex(_) => &self.complex_direct.color,
         }
     }
@@ -172,7 +175,7 @@ impl Pipelines {
     pub fn gradient(&self, blend: DirectBlend) -> &ShapePipeline {
         match blend {
             DirectBlend::Trivial(blend) => &self.gradients[blend],
-            DirectBlend::Multiply => &self.multiply().gradient,
+            DirectBlend::Multiply => &self.multiply.gradient,
             DirectBlend::Complex(_) => &self.complex_direct.gradient,
         }
     }
@@ -180,15 +183,18 @@ impl Pipelines {
     pub fn bitmap(&self, blend: DirectBlend) -> &ShapePipeline {
         match blend {
             DirectBlend::Trivial(blend) => &self.bitmap[blend],
-            DirectBlend::Multiply => &self.multiply().bitmap,
+            DirectBlend::Multiply => &self.multiply.bitmap,
             DirectBlend::Complex(_) => &self.complex_direct.bitmap,
         }
     }
 
-    fn multiply(&self) -> &MultiplyPipelines {
-        self.multiply
-            .as_ref()
-            .expect("DirectBlend::Multiply requires dual-source blending")
+    /// The pipelines of a second draw `blend` needs, after the one `color`,
+    /// `gradient` or `bitmap` gives.
+    pub fn second_step(&self, blend: DirectBlend) -> Option<&MultiplyPipelines> {
+        match blend {
+            DirectBlend::Multiply => self.multiply_second_step.as_ref(),
+            _ => None,
+        }
     }
 
     pub fn new(
@@ -342,42 +348,65 @@ impl Pipelines {
             PrimitiveTopology::TriangleList,
         ));
 
-        let multiply = shaders.multiply.as_ref().map(|shaders| {
+        let multiply_pipelines = |shaders: [&wgpu::ShaderModule; 3], blend_state, step: &str| {
             let pipeline = |name: &str, shader, vertex_buffers, bindings| {
                 create_shape_pipeline(
-                    &format!("{name} (Multiply)"),
+                    &format!("{name} (Multiply{step})"),
                     device,
                     format,
                     shader,
                     msaa_sample_count,
                     vertex_buffers,
                     bindings,
-                    DirectBlend::multiply_blend_state(),
+                    blend_state,
                     0,
                     PrimitiveTopology::TriangleList,
                 )
             };
+            let [color, gradient, bitmap] = shaders;
             MultiplyPipelines {
                 color: pipeline(
                     "Color",
-                    &shaders.color,
+                    color,
                     &VERTEX_BUFFERS_DESCRIPTION_COLOR,
                     &colort_bindings,
                 ),
                 gradient: pipeline(
                     "Gradient",
-                    &shaders.gradient,
+                    gradient,
                     &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
                     &gradient_bindings,
                 ),
                 bitmap: pipeline(
                     "Bitmap",
-                    &shaders.bitmap,
+                    bitmap,
                     &VERTEX_BUFFERS_DESCRIPTION_POS_UV,
                     &bitmap_blend_bindings,
                 ),
             }
-        });
+        };
+        let (multiply, multiply_second_step) = match &shaders.multiply {
+            Some(multiply) => (
+                multiply_pipelines(
+                    [&multiply.color, &multiply.gradient, &multiply.bitmap],
+                    DirectBlend::multiply_blend_state(),
+                    "",
+                ),
+                None,
+            ),
+            None => {
+                let [first, second] = DirectBlend::multiply_step_blend_states();
+                let shaders = [
+                    &shaders.color_shader,
+                    &shaders.gradient_shader,
+                    &shaders.bitmap_shader,
+                ];
+                (
+                    multiply_pipelines(shaders, first, ", first step"),
+                    Some(multiply_pipelines(shaders, second, ", second step")),
+                )
+            }
+        };
 
         let complex_direct = {
             let parent = Some(&bind_layouts.parent_copy);
@@ -465,6 +494,7 @@ impl Pipelines {
             complex_blends: complex_blend_pipelines,
             alpha_mask: alpha_mask_pipeline,
             multiply,
+            multiply_second_step,
             complex_direct,
         }
     }

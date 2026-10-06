@@ -5,6 +5,7 @@ use crate::buffer_builder::BufferBuilder;
 use crate::buffer_pool::TexturePool;
 use crate::dynamic_transforms::DynamicTransforms;
 use crate::mesh::{DrawType, Mesh, as_mesh};
+use crate::pipelines::ShapePipeline;
 use crate::surface::Surface;
 use crate::surface::target::CommandTarget;
 use crate::{
@@ -186,13 +187,20 @@ impl<'encoder> CommandRenderer<'encoder> {
         }
     }
 
-    pub fn prep_color(&mut self, render_pass: &mut wgpu::RenderPass<'encoder>, blend: DirectBlend) {
-        let pipelines = self.pipelines.color(blend);
+    fn set_shape_pipeline(
+        &mut self,
+        render_pass: &mut wgpu::RenderPass<'encoder>,
+        pipeline: &'encoder ShapePipeline,
+    ) {
         if self.needs_stencil {
-            self.set_pipeline(render_pass, pipelines.pipeline_for(self.mask_state));
+            self.set_pipeline(render_pass, pipeline.pipeline_for(self.mask_state));
         } else {
-            self.set_pipeline(render_pass, pipelines.stencilless_pipeline());
+            self.set_pipeline(render_pass, pipeline.stencilless_pipeline());
         }
+    }
+
+    pub fn prep_color(&mut self, render_pass: &mut wgpu::RenderPass<'encoder>, blend: DirectBlend) {
+        self.set_shape_pipeline(render_pass, self.pipelines.color(blend));
         self.bind_parent_copy(render_pass, blend);
     }
 
@@ -213,13 +221,7 @@ impl<'encoder> CommandRenderer<'encoder> {
         bind_group: &'encoder wgpu::BindGroup,
         blend: DirectBlend,
     ) {
-        let pipelines = self.pipelines.gradient(blend);
-        if self.needs_stencil {
-            self.set_pipeline(render_pass, pipelines.pipeline_for(self.mask_state));
-        } else {
-            self.set_pipeline(render_pass, pipelines.stencilless_pipeline());
-        }
-
+        self.set_shape_pipeline(render_pass, self.pipelines.gradient(blend));
         self.set_bind_group(render_pass, bind_group);
         self.bind_parent_copy(render_pass, blend);
     }
@@ -323,15 +325,24 @@ impl<'encoder> CommandRenderer<'encoder> {
             None => (&descriptors.quad.vertices_pos_uv, 0),
         };
 
-        self.draw::<PosUvVertex>(
-            render_pass,
-            vertex_buffer,
-            vertex_offset,
-            &descriptors.quad.indices,
-            wgpu::IndexFormat::Uint32,
-            0..6,
-            instance_index,
-        );
+        let second = self
+            .pipelines
+            .second_step(blend_mode)
+            .map(|second| &second.bitmap);
+        for pipeline in std::iter::once(None).chain(second.map(Some)) {
+            if let Some(pipeline) = pipeline {
+                self.set_shape_pipeline(render_pass, pipeline);
+            }
+            self.draw::<PosUvVertex>(
+                render_pass,
+                vertex_buffer,
+                vertex_offset,
+                &descriptors.quad.indices,
+                wgpu::IndexFormat::Uint32,
+                0..6,
+                instance_index,
+            );
+        }
     }
 
     pub fn render_texture(
@@ -343,15 +354,24 @@ impl<'encoder> CommandRenderer<'encoder> {
     ) {
         self.prep_bitmap(render_pass, bind_group, blend_mode, false);
 
-        self.draw::<PosUvVertex>(
-            render_pass,
-            &self.descriptors.quad.vertices_pos_uv,
-            0,
-            &self.descriptors.quad.indices,
-            wgpu::IndexFormat::Uint32,
-            0..6,
-            instance_index,
-        );
+        let second = self
+            .pipelines
+            .second_step(blend_mode)
+            .map(|second| &second.bitmap);
+        for pipeline in std::iter::once(None).chain(second.map(Some)) {
+            if let Some(pipeline) = pipeline {
+                self.set_shape_pipeline(render_pass, pipeline);
+            }
+            self.draw::<PosUvVertex>(
+                render_pass,
+                &self.descriptors.quad.vertices_pos_uv,
+                0,
+                &self.descriptors.quad.indices,
+                wgpu::IndexFormat::Uint32,
+                0..6,
+                instance_index,
+            );
+        }
     }
 
     pub fn render_shape(
@@ -396,26 +416,39 @@ impl<'encoder> CommandRenderer<'encoder> {
             } else {
                 0
             };
-            if let DrawType::Color = draw.draw_type {
-                self.draw::<PosColorVertex>(
-                    render_pass,
-                    &mesh.vertex_buffer,
-                    vertex_offset,
-                    &mesh.index_buffer,
-                    mesh.index_format,
-                    indices,
-                    instance_index,
-                );
-            } else {
-                self.draw::<PosUvVertex>(
-                    render_pass,
-                    &mesh.vertex_buffer,
-                    vertex_offset,
-                    &mesh.index_buffer,
-                    mesh.index_format,
-                    indices,
-                    instance_index,
-                );
+            let second = self
+                .pipelines
+                .second_step(blend)
+                .map(|second| match &draw.draw_type {
+                    DrawType::Color => &second.color,
+                    DrawType::Gradient { .. } => &second.gradient,
+                    DrawType::Bitmap { .. } => &second.bitmap,
+                });
+            for pipeline in std::iter::once(None).chain(second.map(Some)) {
+                if let Some(pipeline) = pipeline {
+                    self.set_shape_pipeline(render_pass, pipeline);
+                }
+                if let DrawType::Color = draw.draw_type {
+                    self.draw::<PosColorVertex>(
+                        render_pass,
+                        &mesh.vertex_buffer,
+                        vertex_offset,
+                        &mesh.index_buffer,
+                        mesh.index_format,
+                        indices.clone(),
+                        instance_index,
+                    );
+                } else {
+                    self.draw::<PosUvVertex>(
+                        render_pass,
+                        &mesh.vertex_buffer,
+                        vertex_offset,
+                        &mesh.index_buffer,
+                        mesh.index_format,
+                        indices.clone(),
+                        instance_index,
+                    );
+                }
             }
         }
     }
@@ -1565,8 +1598,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
         commands: &mut CommandList,
         blend_mode: &RenderBlendMode,
     ) -> bool {
-        let dual_source_blending = self.descriptors.shaders.multiply.is_some();
-        let Some(blend) = DirectBlend::for_layer(blend_mode, dual_source_blending) else {
+        let Some(blend) = DirectBlend::for_layer(blend_mode, true) else {
             return false;
         };
         match commands.commands.as_slice() {

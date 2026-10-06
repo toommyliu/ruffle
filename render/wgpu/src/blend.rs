@@ -109,7 +109,9 @@ impl TrivialBlend {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DirectBlend {
     Trivial(TrivialBlend),
-    /// Needs `Features::DUAL_SOURCE_BLENDING`; see `shaders/multiply_direct.wgsl`.
+    /// One draw with `Features::DUAL_SOURCE_BLENDING` (see
+    /// `shaders/multiply_direct.wgsl`), otherwise two (see
+    /// `multiply_step_blend_states`).
     Multiply,
     /// Reads what's below from a copy of the target, made right before the
     /// draw; see `shaders/complex_direct.wgsl`.
@@ -119,7 +121,7 @@ pub enum DirectBlend {
 impl DirectBlend {
     pub const NORMAL: DirectBlend = DirectBlend::Trivial(TrivialBlend::Normal);
 
-    pub fn for_layer(mode: &RenderBlendMode, dual_source_blending: bool) -> Option<Self> {
+    pub fn for_layer(mode: &RenderBlendMode, multiply_directly: bool) -> Option<Self> {
         match mode {
             RenderBlendMode::Builtin(BlendMode::Normal | BlendMode::Layer) => Some(Self::NORMAL),
             RenderBlendMode::Builtin(BlendMode::Add) => {
@@ -131,7 +133,7 @@ impl DirectBlend {
             RenderBlendMode::Builtin(BlendMode::Screen) => {
                 Some(DirectBlend::Trivial(TrivialBlend::Screen))
             }
-            RenderBlendMode::Builtin(BlendMode::Multiply) if dual_source_blending => {
+            RenderBlendMode::Builtin(BlendMode::Multiply) if multiply_directly => {
                 Some(DirectBlend::Multiply)
             }
             RenderBlendMode::Builtin(BlendMode::Multiply) => {
@@ -169,6 +171,38 @@ impl DirectBlend {
                 unreachable!("{blend:?} is never drawn directly")
             }
         }
+    }
+
+    /// Flash's multiply in two draws of the same triangles, for devices without
+    /// dual-source blending. The first sets `dst.rgb * (src.rgb + 1 - src.a)` and
+    /// keeps `dst.a`, which the second needs to add `src * (1 - dst.a)`.
+    pub fn multiply_step_blend_states() -> [wgpu::BlendState; 2] {
+        [
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Dst,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
+        ]
     }
 
     pub fn multiply_blend_state() -> wgpu::BlendState {
