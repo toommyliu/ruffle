@@ -20,6 +20,7 @@ use ruffle_render::pixel_bender::PixelBenderShaderHandle;
 use ruffle_render::quality::StageQuality;
 use ruffle_render::transform::Transform;
 use std::mem;
+use std::sync::Arc;
 use swf::{BlendMode, Color, ColorTransform, Twips};
 use wgpu::Backend;
 use wgpu_profiler::Scope;
@@ -176,6 +177,12 @@ impl<'encoder> CommandRenderer<'encoder> {
                 binds,
                 instance_index,
             } => self.render_alpha_mask(render_pass, maskee, mask, binds, *instance_index),
+            DrawCommand::Scissor(region) => render_pass.set_scissor_rect(
+                region.x_min,
+                region.y_min,
+                region.width(),
+                region.height(),
+            ),
         }
     }
 
@@ -557,14 +564,14 @@ pub enum DrawCommand {
         render_stage3d: bool,
     },
     RenderTexture {
-        _texture: PoolOrArcTexture,
+        _texture: Arc<PoolOrArcTexture>,
         binds: wgpu::BindGroup,
         instance_index: u32,
         blend_mode: DirectBlend,
     },
     RenderAlphaMask {
-        maskee: PoolOrArcTexture,
-        mask: PoolOrArcTexture,
+        maskee: Box<PoolOrArcTexture>,
+        mask: Box<PoolOrArcTexture>,
         binds: wgpu::BindGroup,
         instance_index: u32,
     },
@@ -586,9 +593,61 @@ pub enum DrawCommand {
     ActivateMask,
     DeactivateMask,
     PopMask,
+    Scissor(PixelRegion),
 }
 
 impl DrawCommand {
+    /// A copy for drawing part of the same thing, if it holds nothing that can't be shared.
+    fn copy_for_part(&self) -> Option<DrawCommand> {
+        Some(match self {
+            DrawCommand::RenderBitmap {
+                bitmap,
+                instance_index,
+                vertex_offset,
+                smoothing,
+                blend_mode,
+                render_stage3d,
+            } => DrawCommand::RenderBitmap {
+                bitmap: bitmap.clone(),
+                instance_index: *instance_index,
+                vertex_offset: *vertex_offset,
+                smoothing: *smoothing,
+                blend_mode: *blend_mode,
+                render_stage3d: *render_stage3d,
+            },
+            DrawCommand::RenderTexture {
+                _texture,
+                binds,
+                instance_index,
+                blend_mode,
+            } => DrawCommand::RenderTexture {
+                _texture: _texture.clone(),
+                binds: binds.clone(),
+                instance_index: *instance_index,
+                blend_mode: *blend_mode,
+            },
+            DrawCommand::RenderShape {
+                shape,
+                instance_index,
+                blend,
+            } => DrawCommand::RenderShape {
+                shape: shape.clone(),
+                instance_index: *instance_index,
+                blend: *blend,
+            },
+            DrawCommand::DrawRect { instance_index } => DrawCommand::DrawRect {
+                instance_index: *instance_index,
+            },
+            DrawCommand::DrawLine { instance_index } => DrawCommand::DrawLine {
+                instance_index: *instance_index,
+            },
+            DrawCommand::DrawLineRect { instance_index } => DrawCommand::DrawLineRect {
+                instance_index: *instance_index,
+            },
+            _ => return None,
+        })
+    }
+
     fn set_indices(&mut self, index: u32, offset: Option<wgpu::BufferAddress>) {
         match self {
             DrawCommand::RenderBitmap {
@@ -608,7 +667,8 @@ impl DrawCommand {
             DrawCommand::PushMask
             | DrawCommand::ActivateMask
             | DrawCommand::DeactivateMask
-            | DrawCommand::PopMask => {}
+            | DrawCommand::PopMask
+            | DrawCommand::Scissor(_) => {}
         }
     }
 
@@ -625,6 +685,7 @@ impl DrawCommand {
             DrawCommand::DeactivateMask => "deactivate mask",
             DrawCommand::PopMask => "pop mask",
             DrawCommand::RenderAlphaMask { .. } => "render alpha mask",
+            DrawCommand::Scissor(_) => "scissor",
         }
     }
 }
@@ -646,6 +707,7 @@ struct PendingDraw {
     transform: Transforms,
     vertices: Option<[PosUvVertex; 4]>,
     command: DrawCommand,
+    scissor: Option<PixelRegion>,
 }
 
 const LAYER_SIZE_STEP: u32 = 64;
@@ -699,6 +761,10 @@ fn translate_commands(commands: &mut CommandList, dx: Twips, dy: Twips) {
 
 const BATCH_TILE_SIZE: u32 = 16;
 
+/// A part costs a draw and scissor changes. Splits that lower a part by fewer levels than this
+/// were half of all splits in AQW and saved no passes measurably.
+const MIN_SPLIT_GAIN: u16 = 8;
+
 /// A draw goes one level above every earlier draw it overlaps if it reads
 /// what's below, and at the highest of their levels otherwise. Emitting the
 /// draws level by level then renders the same image as drawing them in order.
@@ -707,6 +773,11 @@ struct DrawBatch {
     tiles: Vec<u16>,
     columns: u32,
     levels: Vec<BatchLevel>,
+    tile_levels: Vec<u16>,
+    /// The highest level and the sum of levels of each tile column, then each tile row, of a draw.
+    lines: Vec<(u16, u32)>,
+    /// The highest level of each tile line and every line after it.
+    lines_after: Vec<u16>,
 }
 
 #[derive(Default)]
@@ -715,8 +786,6 @@ struct BatchLevel {
     items: Vec<BatchItem>,
 }
 
-// Draws are nearly every item, so boxing them would only add allocations.
-#[expect(clippy::large_enum_variant)]
 enum BatchItem {
     Draw(PendingDraw),
     Blend(Chunk),
@@ -763,6 +832,12 @@ impl DrawBatch {
                 ..=((region.y_max - 1) / BATCH_TILE_SIZE) as usize)
                 .map(move |row| row * columns + first..=row * columns + last)
         };
+        if let ([region], BatchItem::Draw(draw)) = (regions, &item)
+            && !region.is_empty()
+            && !matches!(draw.command, DrawCommand::RenderAlphaMask { .. })
+        {
+            return self.add_draw_by_tiles(*region, reads_below, item);
+        }
         let touched = || regions.iter().filter(|region| !region.is_empty());
         let mut top = None;
         for region in touched() {
@@ -792,6 +867,154 @@ impl DrawBatch {
             .copies
             .extend(copy.filter(|region| !region.is_empty()));
         entry.items.push(item);
+    }
+
+    /// A draw only has to follow the earlier draws in the tiles it shares with them. Where those
+    /// tiles sit higher on one side of it, the draw goes in as two parts split between its tile
+    /// columns or rows, each at the level its own tiles need, drawn with a scissor.
+    fn add_draw_by_tiles(&mut self, region: PixelRegion, reads_below: bool, item: BatchItem) {
+        let columns = self.columns as usize;
+        let tile = |n: u32| (n / BATCH_TILE_SIZE) as usize;
+        let (x0, x1) = (tile(region.x_min), tile(region.x_max - 1));
+        let (y0, y1) = (tile(region.y_min), tile(region.y_max - 1));
+        let (width, height) = (x1 - x0 + 1, y1 - y0 + 1);
+        let rows = || (y0..=y1).map(|row| row * columns + x0..=row * columns + x1);
+        let (mut lowest, mut highest) = (u16::MAX, 0);
+        for row in rows() {
+            for &top in &self.tiles[row] {
+                lowest = lowest.min(top);
+                highest = highest.max(top);
+            }
+        }
+        let level = |top: u16| {
+            if reads_below {
+                top
+            } else {
+                top.saturating_sub(1)
+            }
+        };
+        let (low, high) = (level(lowest), level(highest));
+
+        let mut best = None;
+        if high - low >= MIN_SPLIT_GAIN {
+            let mut tile_levels = mem::take(&mut self.tile_levels);
+            tile_levels.clear();
+            for row in rows() {
+                tile_levels.extend(self.tiles[row].iter().map(|&top| level(top)));
+            }
+            let (lines, after_max) = (&mut self.lines, &mut self.lines_after);
+            lines.clear();
+            lines.resize(width + height, (0, 0));
+            for (i, &level) in tile_levels.iter().enumerate() {
+                for line in [i % width, width + i / width] {
+                    let (max, sum) = &mut lines[line];
+                    *max = (*max).max(level);
+                    *sum += u32::from(level);
+                }
+            }
+            let total = tile_levels
+                .iter()
+                .map(|&level| u32::from(level))
+                .sum::<u32>();
+            let mut best_excess = u32::from(high) * tile_levels.len() as u32 - total;
+            for (vertical, lines, per_line) in [
+                (true, &lines[..width], height as u32),
+                (false, &lines[width..], width as u32),
+            ] {
+                after_max.clear();
+                after_max.resize(lines.len() + 1, 0);
+                for i in (0..lines.len()).rev() {
+                    after_max[i] = after_max[i + 1].max(lines[i].0);
+                }
+                let (mut before_max, mut before_sum) = (0, 0);
+                for cut in 1..lines.len() {
+                    before_max = before_max.max(lines[cut - 1].0);
+                    before_sum += lines[cut - 1].1;
+                    let excess = u32::from(before_max) * per_line * cut as u32 - before_sum
+                        + u32::from(after_max[cut]) * per_line * (lines.len() - cut) as u32
+                        - (total - before_sum);
+                    let gain = high - before_max.min(after_max[cut]);
+                    if excess < best_excess && gain >= MIN_SPLIT_GAIN {
+                        best_excess = excess;
+                        best = Some((vertical, cut, before_max, after_max[cut]));
+                    }
+                }
+            }
+            self.tile_levels = tile_levels;
+        }
+
+        let raise = |tiles: &mut [u16], level: u16| {
+            for tile in tiles {
+                *tile = (*tile).max(level + 1);
+            }
+        };
+        for (row_index, row) in rows().enumerate() {
+            let tiles = &mut self.tiles[row];
+            match best {
+                None => raise(tiles, high),
+                Some((true, cut, before, after)) => {
+                    let (first, second) = tiles.split_at_mut(cut);
+                    raise(first, before);
+                    raise(second, after);
+                }
+                Some((false, cut, before, after)) => {
+                    raise(tiles, if row_index < cut { before } else { after });
+                }
+            }
+        }
+
+        if self.levels.len() <= usize::from(high) {
+            self.levels
+                .resize_with(usize::from(high) + 1, Default::default);
+        }
+        let (Some((vertical, cut, before, after)), BatchItem::Draw(draw)) = (best, &item) else {
+            let entry = &mut self.levels[usize::from(high)];
+            entry.copies.extend(reads_below.then_some(region));
+            entry.items.push(item);
+            return;
+        };
+        let size = BATCH_TILE_SIZE;
+        let split = if vertical {
+            ((x0 + cut) as u32 * size).clamp(region.x_min, region.x_max)
+        } else {
+            ((y0 + cut) as u32 * size).clamp(region.y_min, region.y_max)
+        };
+        let (first, second) = if vertical {
+            (
+                PixelRegion {
+                    x_max: split,
+                    ..region
+                },
+                PixelRegion {
+                    x_min: split,
+                    ..region
+                },
+            )
+        } else {
+            (
+                PixelRegion {
+                    y_max: split,
+                    ..region
+                },
+                PixelRegion {
+                    y_min: split,
+                    ..region
+                },
+            )
+        };
+        for (part, level) in [(first, before), (second, after)] {
+            let entry = &mut self.levels[usize::from(level)];
+            entry.copies.extend(reads_below.then_some(part));
+            entry.items.push(BatchItem::Draw(PendingDraw {
+                transform: draw.transform,
+                vertices: draw.vertices,
+                command: draw
+                    .command
+                    .copy_for_part()
+                    .expect("only parts of commands that can be copied"),
+                scissor: Some(part),
+            }));
+        }
     }
 
     fn take_levels(&mut self) -> Vec<BatchLevel> {
@@ -846,6 +1069,8 @@ struct WgpuCommandHandler<'encoder, 'global: 'encoder> {
 
     result: Vec<Chunk>,
     current: Vec<DrawCommand>,
+    /// The scissor `current` leaves set, if it isn't the whole target.
+    scissor: Option<PixelRegion>,
     transforms: BufferBuilder,
     vertices: BufferBuilder,
     needs_stencil: bool,
@@ -891,6 +1116,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
 
             result: vec![],
             current: vec![],
+            scissor: None,
             transforms,
             vertices,
             needs_stencil: false,
@@ -948,7 +1174,10 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                         for item in items {
                             match item {
                                 MaskedItem::Draw(draw) => self.push_pending(draw),
-                                MaskedItem::Mask(command) => self.current.push(command),
+                                MaskedItem::Mask(command) => {
+                                    self.set_scissor(None);
+                                    self.current.push(command);
+                                }
                                 MaskedItem::Copy(region) => {
                                     self.flush_current();
                                     self.result.push(Chunk::CopyParent {
@@ -977,6 +1206,21 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                 command
             },
         );
+        // After `push_draw`, which may have started a new chunk, so the scissor is in the draw's.
+        if draw.scissor != self.scissor {
+            let command = self.current.pop().expect("push_draw adds the draw");
+            self.set_scissor(draw.scissor);
+            self.current.push(command);
+        }
+    }
+
+    fn set_scissor(&mut self, scissor: Option<PixelRegion>) {
+        if scissor != self.scissor {
+            self.current.push(DrawCommand::Scissor(
+                scissor.unwrap_or_else(|| PixelRegion::for_whole_size(self.width, self.height)),
+            ));
+            self.scissor = scissor;
+        }
     }
 
     fn record_mask(&mut self, command: DrawCommand) {
@@ -1129,6 +1373,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
         if self.current.is_empty() {
             return;
         }
+        self.scissor = None;
         self.result.push(Chunk::Draw {
             chunk: mem::take(&mut self.current),
             needs_stencil: self.needs_stencil,
@@ -1192,6 +1437,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                     .expect("Batched draws have a quad's vertices or none")
             }),
             command: command_builder(0, vertices.map(|_| 0)),
+            scissor: None,
         };
         if let Some(block) = &mut self.masked {
             block.regions.push(footprint.region);
@@ -1516,7 +1762,7 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                     transform.color_transform,
                     footprint,
                     |instance_index| DrawCommand::RenderTexture {
-                        _texture: texture,
+                        _texture: Arc::new(texture),
                         binds: bind_group,
                         instance_index,
                         blend_mode,
@@ -1757,8 +2003,8 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
             Default::default(),
             footprint,
             |instance_index| DrawCommand::RenderAlphaMask {
-                maskee,
-                mask,
+                maskee: Box::new(maskee),
+                mask: Box::new(mask),
                 binds,
                 instance_index,
             },
