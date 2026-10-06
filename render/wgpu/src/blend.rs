@@ -19,9 +19,9 @@ pub enum ComplexBlend {
 #[derive(Debug, Clone)]
 pub enum BlendType {
     /// Trivial blends can be expressed with just a "draw bitmap" with blend states
-    Trivial(TrivialBlend),
+    Trivial,
 
-    /// Complex blends require a shader to express, so they are separated out into their own render
+    /// Complex blends require a shader to express
     Complex(ComplexBlend),
 
     /// Invoke a custom `PixelBender` shader.
@@ -31,12 +31,12 @@ pub enum BlendType {
 impl BlendType {
     pub fn from(mode: RenderBlendMode) -> BlendType {
         match mode {
-            RenderBlendMode::Builtin(BlendMode::Normal) => BlendType::Trivial(TrivialBlend::Normal),
-            RenderBlendMode::Builtin(BlendMode::Layer) => BlendType::Trivial(TrivialBlend::Normal),
+            RenderBlendMode::Builtin(BlendMode::Normal) => BlendType::Trivial,
+            RenderBlendMode::Builtin(BlendMode::Layer) => BlendType::Trivial,
             RenderBlendMode::Builtin(BlendMode::Multiply) => {
                 BlendType::Complex(ComplexBlend::Multiply)
             }
-            RenderBlendMode::Builtin(BlendMode::Screen) => BlendType::Trivial(TrivialBlend::Screen),
+            RenderBlendMode::Builtin(BlendMode::Screen) => BlendType::Trivial,
             RenderBlendMode::Builtin(BlendMode::Lighten) => {
                 BlendType::Complex(ComplexBlend::Lighten)
             }
@@ -44,10 +44,8 @@ impl BlendType {
             RenderBlendMode::Builtin(BlendMode::Difference) => {
                 BlendType::Complex(ComplexBlend::Difference)
             }
-            RenderBlendMode::Builtin(BlendMode::Add) => BlendType::Trivial(TrivialBlend::Add),
-            RenderBlendMode::Builtin(BlendMode::Subtract) => {
-                BlendType::Trivial(TrivialBlend::Subtract)
-            }
+            RenderBlendMode::Builtin(BlendMode::Add) => BlendType::Trivial,
+            RenderBlendMode::Builtin(BlendMode::Subtract) => BlendType::Trivial,
             RenderBlendMode::Builtin(BlendMode::Invert) => BlendType::Complex(ComplexBlend::Invert),
             RenderBlendMode::Builtin(BlendMode::Alpha) => BlendType::Complex(ComplexBlend::Alpha),
             RenderBlendMode::Builtin(BlendMode::Erase) => BlendType::Complex(ComplexBlend::Erase),

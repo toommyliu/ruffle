@@ -1,6 +1,6 @@
 use super::target::PoolOrArcTexture;
 use crate::backend::RenderTargetMode;
-use crate::blend::{BlendType, ComplexBlend, DirectBlend, TrivialBlend};
+use crate::blend::{BlendType, ComplexBlend, DirectBlend};
 use crate::buffer_builder::BufferBuilder;
 use crate::buffer_pool::TexturePool;
 use crate::dynamic_transforms::DynamicTransforms;
@@ -332,14 +332,9 @@ impl<'encoder> CommandRenderer<'encoder> {
         render_pass: &mut wgpu::RenderPass<'encoder>,
         instance_index: u32,
         bind_group: &'encoder wgpu::BindGroup,
-        blend_mode: TrivialBlend,
+        blend_mode: DirectBlend,
     ) {
-        self.prep_bitmap(
-            render_pass,
-            bind_group,
-            DirectBlend::Trivial(blend_mode),
-            false,
-        );
+        self.prep_bitmap(render_pass, bind_group, blend_mode, false);
 
         self.draw::<PosUvVertex>(
             render_pass,
@@ -565,7 +560,7 @@ pub enum DrawCommand {
         _texture: PoolOrArcTexture,
         binds: wgpu::BindGroup,
         instance_index: u32,
-        blend_mode: TrivialBlend,
+        blend_mode: DirectBlend,
     },
     RenderAlphaMask {
         maskee: PoolOrArcTexture,
@@ -1411,6 +1406,9 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
         if self.try_blend_directly(&mut commands, &blend_mode) {
             return;
         }
+        // Dual-source multiply blends each sample with its own pixels below, which changes a layer's
+        // multisampled edges, so layers multiply through the parent copy like the other complex modes.
+        let direct = DirectBlend::for_layer(&blend_mode, false);
         let footprint = self.commands_footprint(&commands);
         let layer_rect = self.layer_rect(&blend_mode, &commands, footprint);
         if let Some(rect) = layer_rect {
@@ -1460,14 +1458,14 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
         // TODO Add support for shader blends in masks.
         let is_shader_blend_in_mask =
             self.num_masks > 0 && matches!(blend_type, BlendType::Shader(_));
-        let blend_type = if is_shader_blend_in_mask {
-            BlendType::Trivial(TrivialBlend::Normal)
+        let direct = if is_shader_blend_in_mask {
+            Some(DirectBlend::NORMAL)
         } else {
-            blend_type
+            direct
         };
 
-        match blend_type {
-            BlendType::Trivial(blend_mode) => {
+        match direct {
+            Some(blend_mode) => {
                 let origin = layer_rect.map_or(Matrix::IDENTITY, |rect| {
                     Matrix::translate(
                         Twips::from_pixels_i32(rect.x as i32),
@@ -1500,9 +1498,17 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                             ],
                             label: None,
                         });
+                let reads_below = matches!(blend_mode, DirectBlend::Complex(_));
+                if reads_below && footprint.is_empty() {
+                    return;
+                }
+                if let (true, Some(block)) = (reads_below, &mut self.masked) {
+                    block.items.push(MaskedItem::Copy(footprint));
+                    block.reads_below = true;
+                }
                 let footprint = Footprint {
                     region: footprint,
-                    reads_below: false,
+                    reads_below,
                 };
                 self.add_to_current(
                     transform.matrix,
@@ -1517,7 +1523,7 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                     },
                 );
             }
-            blend_type => {
+            None => {
                 // Alpha and Erase change the nearest layer, and shaders may
                 // change pixels the layer doesn't cover.
                 let region = match blend_type {
