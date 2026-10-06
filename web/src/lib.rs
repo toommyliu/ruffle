@@ -132,6 +132,8 @@ struct RuffleInstance {
     scheduled_tick: Cell<Option<ScheduledTick>>,
     background_tick_mode: bool,
     render_scale: f64,
+    supersample: bool,
+    stage_sample_count: Cell<u32>,
     mouse_move_callback: Option<JsCallback<PointerEvent>>,
     pending_mouse_move: Cell<Option<PendingMouseMove>>,
     mouse_enter_callback: Option<JsCallback<PointerEvent>>,
@@ -582,6 +584,8 @@ impl RuffleHandle {
             scheduled_tick: Cell::new(None),
             background_tick_mode: false,
             render_scale: 1.0,
+            supersample: player.supersample,
+            stage_sample_count: Cell::new(1),
             mouse_move_callback: None,
             pending_mouse_move: Cell::new(None),
             mouse_enter_callback: None,
@@ -1184,12 +1188,17 @@ impl RuffleHandle {
         let mut next_frame_in = None;
         let mut new_dimensions = None;
         let mut gamepad_button_events = Vec::new();
+        let mut supersample = false;
+        let mut stage_sample_count = 1;
         let _ = self.with_instance_mut(|instance| {
+            supersample = instance.supersample;
             // Check for canvas resize.
             let canvas_width = instance.canvas.client_width();
             let canvas_height = instance.canvas.client_height();
             // Changes via user zooming.
             let device_pixel_ratio = instance.window.device_pixel_ratio() * instance.render_scale;
+            let device_pixel_ratio = device_pixel_ratio
+                * supersample_scale(instance.stage_sample_count.get(), device_pixel_ratio);
             if instance.canvas_width != canvas_width
                 || instance.canvas_height != canvas_height
                 || (instance.device_pixel_ratio - device_pixel_ratio).abs() >= f64::EPSILON
@@ -1328,9 +1337,13 @@ impl RuffleHandle {
             next_frame_in = core
                 .is_playing()
                 .then(|| core.time_til_next_frame().as_secs_f64() * 1000.0);
+            if supersample {
+                stage_sample_count = core.quality().sample_count();
+            }
         });
 
         let _ = self.with_instance(|instance| {
+            instance.stage_sample_count.set(stage_sample_count);
             if !instance.background_tick_mode {
                 instance.schedule_tick(next_frame_in);
             }
@@ -1372,6 +1385,13 @@ struct PendingMouseMove {
 }
 
 const MAX_MOUSE_MOVE_DELAY_MS: f64 = 50.0;
+
+fn supersample_scale(sample_count: u32, device_pixel_ratio: f64) -> f64 {
+    if sample_count <= 1 {
+        return 1.0;
+    }
+    (f64::from(sample_count).sqrt() / device_pixel_ratio).clamp(1.0, 2.0)
+}
 
 const DISPLAY_FRAME_MS: f64 = 1000.0 / 60.0;
 

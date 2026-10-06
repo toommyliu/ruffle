@@ -260,6 +260,17 @@ impl WgpuRenderBackend<crate::target::TextureTarget> {
 }
 
 impl<T: RenderTarget> WgpuRenderBackend<T> {
+    pub fn set_max_sample_count(&mut self, sample_count: u32) {
+        self.descriptors.set_max_sample_count(sample_count);
+        self.surface = Surface::new(
+            &self.descriptors,
+            self.surface.quality(),
+            self.surface.size().width,
+            self.surface.size().height,
+            self.target.format(),
+        );
+    }
+
     pub fn new(descriptors: Arc<Descriptors>, target: T) -> Result<Self, Error> {
         if target.width() > descriptors.limits.max_texture_dimension_2d
             || target.height() > descriptors.limits.max_texture_dimension_2d

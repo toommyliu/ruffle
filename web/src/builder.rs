@@ -504,7 +504,7 @@ impl RuffleInstanceBuilder {
     #[allow(clippy::unused_async)]
     pub async fn create_renderer(
         &self,
-    ) -> Result<(Box<dyn RenderBackend>, HtmlCanvasElement), Box<dyn Error>> {
+    ) -> Result<(Box<dyn RenderBackend>, HtmlCanvasElement, bool), Box<dyn Error>> {
         let window = web_sys::window().ok_or("Expected window")?;
         let document = window.document().ok_or("Expected document")?;
         #[cfg(not(any(
@@ -556,7 +556,7 @@ impl RuffleInstanceBuilder {
                         .await
                         {
                             Ok(renderer) => {
-                                return Ok((Box::new(renderer), canvas));
+                                return Ok((Box::new(renderer), canvas, false));
                             }
                             Err(error) => {
                                 tracing::error!("Error creating wgpu webgpu renderer: {}", error)
@@ -579,8 +579,11 @@ impl RuffleInstanceBuilder {
                     )
                     .await
                     {
-                        Ok(renderer) => {
-                            return Ok((Box::new(renderer), canvas));
+                        Ok(mut renderer) => {
+                            // On WebGL, every render pass resolves its samples with a full-size
+                            // blit, so the player supersamples instead.
+                            renderer.set_max_sample_count(1);
+                            return Ok((Box::new(renderer), canvas, true));
                         }
                         Err(error) => {
                             tracing::error!("Error creating wgpu webgl renderer: {}", error)
@@ -601,7 +604,7 @@ impl RuffleInstanceBuilder {
                         self.quality,
                     ) {
                         Ok(renderer) => {
-                            return Ok((Box::new(renderer), canvas));
+                            return Ok((Box::new(renderer), canvas, false));
                         }
                         Err(error) => {
                             tracing::error!("Error creating WebGL renderer: {}", error)
@@ -619,7 +622,7 @@ impl RuffleInstanceBuilder {
                     match ruffle_render_canvas::WebCanvasRenderBackend::new(&canvas, is_transparent)
                     {
                         Ok(renderer) => {
-                            return Ok((Box::new(renderer), canvas));
+                            return Ok((Box::new(renderer), canvas, false));
                         }
                         Err(error) => tracing::error!("Error creating canvas renderer: {}", error),
                     }
@@ -676,7 +679,7 @@ impl RuffleInstanceBuilder {
     ) -> Result<BuiltPlayer, Box<dyn Error>> {
         let window = web_sys::window().ok_or("Expected window")?;
 
-        let (renderer, canvas) = self.create_renderer().await?;
+        let (renderer, canvas, supersample) = self.create_renderer().await?;
 
         let mut builder = PlayerBuilder::new()
             .with_boxed_renderer(renderer)
@@ -744,6 +747,7 @@ impl RuffleInstanceBuilder {
             core,
             canvas,
             trace_observer,
+            supersample,
         })
     }
 }
@@ -752,4 +756,5 @@ pub struct BuiltPlayer {
     pub core: Arc<Mutex<Player>>,
     pub canvas: HtmlCanvasElement,
     pub trace_observer: Rc<RefCell<JsValue>>,
+    pub supersample: bool,
 }

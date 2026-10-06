@@ -8,6 +8,7 @@ use crate::{
 };
 use fnv::FnvHashMap;
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wgpu::Backend;
 use wgpu::util::DeviceExt;
@@ -29,6 +30,7 @@ pub struct Descriptors {
     pub shaders: Shaders,
     pipelines: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), Arc<Pipelines>>>,
     format_features: Mutex<FnvHashMap<wgpu::TextureFormat, wgpu::TextureFormatFeatureFlags>>,
+    max_sample_count: AtomicU32,
     pub filters: Filters,
     pub complex_direct_modes: wgpu::Buffer,
     pub complex_direct_mode_stride: u32,
@@ -86,6 +88,7 @@ impl Descriptors {
             shaders,
             pipelines: Default::default(),
             format_features: Default::default(),
+            max_sample_count: AtomicU32::new(u32::MAX),
             filters,
             complex_direct_modes,
             complex_direct_mode_stride,
@@ -177,11 +180,8 @@ impl Descriptors {
 
     /// On the web, asking the adapter for a format's features reads every
     /// feature it supports from JavaScript, one call each.
-    pub fn supported_sample_count(
-        &self,
-        mut sample_count: u32,
-        format: wgpu::TextureFormat,
-    ) -> u32 {
+    pub fn supported_sample_count(&self, sample_count: u32, format: wgpu::TextureFormat) -> u32 {
+        let mut sample_count = sample_count.min(self.max_sample_count.load(Ordering::Relaxed));
         let features = *self
             .format_features
             .lock()
@@ -196,6 +196,10 @@ impl Descriptors {
             sample_count /= 2;
         }
         sample_count
+    }
+
+    pub fn set_max_sample_count(&self, sample_count: u32) {
+        self.max_sample_count.store(sample_count, Ordering::Relaxed);
     }
 
     pub fn pipelines(&self, msaa_sample_count: u32, format: wgpu::TextureFormat) -> Arc<Pipelines> {
