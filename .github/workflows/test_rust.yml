@@ -1,0 +1,73 @@
+name: Test Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FEATURES: lzma,jpegxr,imgtests
+  TEST_OPTS: --workspace --locked --no-fail-fast -j 4
+  LINUX_DEPENDENCIES: mesa-vulkan-drivers libasound2-dev libudev-dev libfontconfig-dev libfreetype6-dev
+  CARGO_INCREMENTAL: '1'
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  RUSTUP_WINDOWS_PATH_ADD_BIN: '1'
+  XDG_RUNTIME_DIR: ''
+
+jobs:
+  build:
+    name: Test Rust / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt install -y ${{ env.LINUX_DEPENDENCIES }}
+
+      - name: Enable freetype tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo FEATURES=${FEATURES},freetype | tee -a $GITHUB_ENV
+
+      - name: Cache Cargo output
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "desktop"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests
+        shell: bash
+        env:
+          RUFFLE_TEST_OPTS: "--compile-mode=compile-and-verify"
+        run: cargo nextest run --profile ci --cargo-profile ci ${TEST_OPTS} --features ${FEATURES} -E 'test(~cache_as_bitmap) or test(~bitmapdata_draw_cab_quality)'
+
+      - name: Upload images
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: swf_images_${{ matrix.os }}
+          path: |
+            tests*/**/*.actual*.png
+            tests*/**/*.difference*.png
