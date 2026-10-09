@@ -678,7 +678,7 @@ impl<'gc> MovieLoader<'gc> {
         status: u16,
         redirected: bool,
     ) -> Result<bool, Error> {
-        let mc = match context.load_manager.get_loader(handle) {
+        let (mc, downloaded) = match context.load_manager.get_loader(handle) {
             Some(Self {
                 target_clip,
                 movie,
@@ -703,7 +703,12 @@ impl<'gc> MovieLoader<'gc> {
                     return Ok(false);
                 }
 
-                *target_clip
+                let downloaded = match vm_data {
+                    MovieLoaderVMData::Avm2 { loader_info, .. } => loader_info.bytes_downloaded(),
+                    MovieLoaderVMData::Avm1 { .. } => 0,
+                };
+
+                (*target_clip, downloaded)
             }
             None => return Err(Error::Cancelled),
         };
@@ -715,7 +720,7 @@ impl<'gc> MovieLoader<'gc> {
         MovieLoader::movie_loader_progress(
             handle,
             context,
-            mc.compressed_loaded_bytes() as usize,
+            (mc.compressed_loaded_bytes() as usize).max(downloaded),
             mc.compressed_total_bytes() as usize,
         )?;
 
