@@ -95,6 +95,7 @@ mod conv;
 mod device;
 mod fence;
 mod queue;
+mod queue_state;
 
 pub use fence::Fence;
 
