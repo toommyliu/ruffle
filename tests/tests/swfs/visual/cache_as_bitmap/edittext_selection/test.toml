@@ -5,12 +5,31 @@ image_comparisons."output.02".trigger = 2
 image_comparisons."output.03".trigger = 3
 
 [[image_comparisons."output.01".checks]]
+filter = 'not(os = "windows")'
+max_outliers = 8
+
+# Windows CI renders with WARP, which rounds these cached bitmaps differently.
+[[image_comparisons."output.01".checks]]
+filter = 'os = "windows"'
+tolerance = 1
 max_outliers = 8
 
 [[image_comparisons."output.02".checks]]
+filter = 'not(os = "windows")'
+max_outliers = 8
+
+[[image_comparisons."output.02".checks]]
+filter = 'os = "windows"'
+tolerance = 1
 max_outliers = 8
 
 [[image_comparisons."output.03".checks]]
+filter = 'not(os = "windows")'
+max_outliers = 8
+
+[[image_comparisons."output.03".checks]]
+filter = 'os = "windows"'
+tolerance = 1
 max_outliers = 8
 
 [player_options]

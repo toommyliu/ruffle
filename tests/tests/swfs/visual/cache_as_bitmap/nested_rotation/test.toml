@@ -1,7 +1,13 @@
 num_frames = 3
 
-[image_comparisons.output]
+[[image_comparisons.output.checks]]
+filter = 'not(os = "windows")'
 tolerance = 0
+
+# Windows CI renders with WARP, which rounds these cached bitmaps differently.
+[[image_comparisons.output.checks]]
+filter = 'os = "windows"'
+tolerance = 1
 
 [player_options]
 with_renderer = { optional = false, quality = "low" }
