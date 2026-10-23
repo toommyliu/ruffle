@@ -409,7 +409,16 @@ impl Pipelines {
         };
 
         let complex_direct = {
-            let parent = Some(&bind_layouts.parent_copy);
+            let parent = Some(
+                if device
+                    .features()
+                    .contains(wgpu::Features::FRAMEBUFFER_FETCH)
+                {
+                    &bind_layouts.fetch_blend
+                } else {
+                    &bind_layouts.parent_copy
+                },
+            );
             let color_bindings = vec![
                 Some(&bind_layouts.globals),
                 Some(&bind_layouts.transforms),

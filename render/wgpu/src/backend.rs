@@ -1793,6 +1793,7 @@ async fn request_device(
         | wgpu::Features::TEXTURE_COMPRESSION_BC
         | wgpu::Features::FLOAT32_FILTERABLE
         | wgpu::Features::DUAL_SOURCE_BLENDING
+        | wgpu::Features::FRAMEBUFFER_FETCH
         | GpuProfiler::ALL_WGPU_TIMER_FEATURES;
 
     features |= optional_features & adapter.features();
