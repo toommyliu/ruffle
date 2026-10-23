@@ -218,6 +218,10 @@ bitflags::bitflags! {
         const MEMORY_DECORATION_VOLATILE = 1 << 42;
         /// Support for 16-bit integer types.
         const SHADER_INT16 = 1 << 43;
+        /// Support for [`BuiltIn::FramebufferFetch`][1].
+        ///
+        /// [1]: crate::BuiltIn::FramebufferFetch
+        const FRAMEBUFFER_FETCH = 1 << 44;
     }
 }
 
@@ -241,6 +245,7 @@ impl Capabilities {
             Self::COOPERATIVE_MATRIX => Some(Ext::WgpuCooperativeMatrix),
             Self::RAY_TRACING_PIPELINE => Some(Ext::WgpuRayTracingPipeline),
             Self::PER_VERTEX => Some(Ext::WgpuPerVertex),
+            Self::FRAMEBUFFER_FETCH => Some(Ext::WgpuFramebufferFetch),
             Self::BUFFER_BINDING_ARRAY
             | Self::BUFFER_BINDING_ARRAY_NON_UNIFORM_INDEXING
             | Self::STORAGE_BUFFER_BINDING_ARRAY

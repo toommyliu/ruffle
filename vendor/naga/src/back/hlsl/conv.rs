@@ -186,7 +186,7 @@ impl crate::BuiltIn {
             Self::BaseInstance | Self::BaseVertex | Self::WorkGroupSize => {
                 return Err(Error::Unimplemented(format!("builtin {self:?}")))
             }
-            Self::PointSize | Self::PointCoord | Self::DrawIndex => {
+            Self::PointSize | Self::PointCoord | Self::DrawIndex | Self::FramebufferFetch => {
                 return Err(Error::Custom(format!("Unsupported builtin {self:?}")))
             }
             Self::CullPrimitive => "SV_CullPrimitive",

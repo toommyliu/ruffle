@@ -214,7 +214,8 @@ impl TryToWgsl for crate::BuiltIn {
             | Bi::CullDistance
             | Bi::PointSize
             | Bi::PointCoord
-            | Bi::WorkGroupSize => return None,
+            | Bi::WorkGroupSize
+            | Bi::FramebufferFetch => return None,
         })
     }
 }

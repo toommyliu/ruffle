@@ -229,6 +229,27 @@ impl<'a> BindingParser<'a> {
                 lexer.next_if(Token::Separator(','));
                 lexer.expect(Token::Paren(')'))?;
             }
+            "color" => {
+                lexer.require_enable_extension(
+                    ImplementedEnableExtension::WgpuFramebufferFetch,
+                    name_span,
+                )?;
+                lexer.expect(Token::Paren('('))?;
+                let (token, span) = lexer.next();
+                if !matches!(
+                    token,
+                    Token::Number(Ok(Number::AbstractInt(0) | Number::I32(0) | Number::U32(0)))
+                ) {
+                    return Err(Box::new(Error::Unexpected(
+                        span,
+                        ExpectedToken::Token(Token::Number(Ok(Number::AbstractInt(0)))),
+                    )));
+                }
+                self.built_in
+                    .set(crate::BuiltIn::FramebufferFetch, name_span)?;
+                lexer.next_if(Token::Separator(','));
+                lexer.expect(Token::Paren(')'))?;
+            }
             "per_primitive" => {
                 lexer.require_enable_extension(
                     ImplementedEnableExtension::WgpuMeshShader,

@@ -668,6 +668,7 @@ impl ResolvedBinding {
                     }
                     Bi::SampleIndex => "sample_id",
                     Bi::SampleMask => "sample_mask",
+                    Bi::FramebufferFetch => "color(0)",
                     // compute
                     Bi::GlobalInvocationId => "thread_position_in_grid",
                     Bi::LocalInvocationId => "thread_position_in_threadgroup",
@@ -847,6 +848,7 @@ pub fn supported_capabilities() -> crate::valid::Capabilities {
         | Caps::MULTISAMPLED_SHADING
         | Caps::RAY_QUERY
         | Caps::DUAL_SOURCE_BLENDING
+        | Caps::FRAMEBUFFER_FETCH
         | Caps::CUBE_ARRAY_TEXTURES
         | Caps::SHADER_INT64
         | Caps::SUBGROUP

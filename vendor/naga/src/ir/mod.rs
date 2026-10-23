@@ -407,6 +407,8 @@ pub enum BuiltIn {
     SampleIndex,
     /// Read or written in fragment shaders
     SampleMask,
+    /// Read in fragment shaders: color attachment 0 as it was before this fragment
+    FramebufferFetch,
 
     /// Read in compute, task, and mesh shaders
     GlobalInvocationId,

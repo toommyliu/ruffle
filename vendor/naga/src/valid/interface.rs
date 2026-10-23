@@ -272,6 +272,7 @@ impl VaryingContext<'_> {
                     | Bi::SubgroupSize
                     | Bi::SubgroupInvocationId => Capabilities::SUBGROUP,
                     Bi::DrawIndex => Capabilities::DRAW_INDEX,
+                    Bi::FramebufferFetch => Capabilities::FRAMEBUFFER_FETCH,
                     _ => Capabilities::empty(),
                 };
                 if !self.capabilities.contains(required) {
@@ -384,6 +385,14 @@ impl VaryingContext<'_> {
                     Bi::SampleMask => (
                         self.stage == St::Fragment,
                         *ty_inner == Ti::Scalar(crate::Scalar::U32),
+                    ),
+                    Bi::FramebufferFetch => (
+                        self.stage == St::Fragment && !self.output,
+                        *ty_inner
+                            == Ti::Vector {
+                                size: Vs::Quad,
+                                scalar: crate::Scalar::F32,
+                            },
                     ),
                     Bi::LocalInvocationIndex => (
                         self.stage.compute_like() && !self.output,

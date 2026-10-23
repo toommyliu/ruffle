@@ -3257,6 +3257,9 @@ impl Writer {
                         BuiltIn::SampleId
                     }
                     Bi::SampleMask => BuiltIn::SampleMask,
+                    Bi::FramebufferFetch => {
+                        return Err(Error::FeatureNotImplemented("framebuffer fetch"))
+                    }
                     // compute
                     Bi::GlobalInvocationId => BuiltIn::GlobalInvocationId,
                     Bi::LocalInvocationId => BuiltIn::LocalInvocationId,
