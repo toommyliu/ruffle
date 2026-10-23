@@ -118,6 +118,7 @@ rascal = "0.3.5"
 jpegxr = { git = "https://github.com/ruffle-rs/jpegxr", rev = "86cc1749d493288f53d7290ac3eb7082c475b5d9" }
 
 [patch.crates-io]
+wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
 
 [workspace.lints.rust]
