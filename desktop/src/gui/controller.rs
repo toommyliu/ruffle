@@ -491,6 +491,8 @@ impl GuiController {
 
         self.window.pre_present_notify();
         self.descriptors.queue.present(surface_texture);
+        #[cfg(feature = "stats")]
+        crate::stats::present();
         #[cfg(feature = "tracy")]
         tracing_tracy::client::frame_mark();
         #[cfg(feature = "tracy_images")]

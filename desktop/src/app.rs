@@ -59,6 +59,8 @@ impl MainWindow {
                     }
                     // Even if the movie is paused, user interaction with debug tools can change the render output
                     player.render();
+                    #[cfg(feature = "stats")]
+                    crate::stats::render();
                 }
 
                 self.gui.render(player);
@@ -515,6 +517,8 @@ impl ApplicationHandler<RuffleEvent> for App {
             let window = event_loop
                 .create_window(window_attributes)
                 .expect("Window should be created");
+            #[cfg(feature = "stats")]
+            crate::stats::configure_window(&window);
             let max_window_size = get_screen_size(&window);
             window.set_max_inner_size(Some(max_window_size));
             let window = Arc::new(window);
@@ -710,6 +714,12 @@ impl ApplicationHandler<RuffleEvent> for App {
 
         if let Some(main_window) = &mut self.main_window {
             main_window.about_to_wait(self.gilrs.as_mut());
+            #[cfg(feature = "stats")]
+            crate::stats::sample(
+                main_window.player.get().as_deref(),
+                main_window.gui.window(),
+                main_window.minimized || main_window.occluded,
+            );
 
             let next_repaint_time = if main_window.minimized || main_window.occluded {
                 None

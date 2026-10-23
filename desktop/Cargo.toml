@@ -81,6 +81,7 @@ InternalName = "ruffle_desktop"
 OriginalFilename = "ruffle.exe"
 
 [features]
+stats = ["ruffle_render_wgpu/stats"]
 default = ["software_video", "external_video", "lzma", "fontconfig", "freetype"]
 shell-completions = ["dep:clap_complete"]
 jpegxr = ["ruffle_core/jpegxr"]
