@@ -395,5 +395,22 @@ impl WebGpuError for MissingDownlevelFlags {
     }
 }
 
-pub use wgpu_naga_bridge::create_validator;
-pub use wgpu_naga_bridge::features_to_naga_capabilities;
+pub fn features_to_naga_capabilities(
+    features: wgt::Features,
+    downlevel: wgt::DownlevelFlags,
+) -> naga::valid::Capabilities {
+    let mut caps = wgpu_naga_bridge::features_to_naga_capabilities(features, downlevel);
+    caps.set(
+        naga::valid::Capabilities::FRAMEBUFFER_FETCH,
+        features.contains(wgt::Features::FRAMEBUFFER_FETCH),
+    );
+    caps
+}
+
+pub fn create_validator(
+    features: wgt::Features,
+    downlevel: wgt::DownlevelFlags,
+    flags: naga::valid::ValidationFlags,
+) -> naga::valid::Validator {
+    naga::valid::Validator::new(flags, features_to_naga_capabilities(features, downlevel))
+}

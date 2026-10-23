@@ -314,6 +314,7 @@ struct CapabilitiesQuery {
     supports_arrays_of_textures_write: bool,
     supports_depth_clip_control: bool,
     supports_shader_primitive_index: bool,
+    supports_framebuffer_fetch: bool,
     has_unified_memory: Option<bool>,
     timestamp_query_support: TimestampQuerySupport,
     supports_simd_scoped_operations: bool,

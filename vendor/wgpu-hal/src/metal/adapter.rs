@@ -1057,6 +1057,8 @@ impl super::CapabilitiesQuery {
                 && (metal3
                     || device.supportsFamily(MTLGPUFamily::Apple7)
                     || device.supportsFamily(MTLGPUFamily::Mac2)),
+            supports_framebuffer_fetch: family_check
+                && device.supportsFamily(MTLGPUFamily::Apple1),
             // https://developer.apple.com/documentation/metal/mtldevice/hasunifiedmemory
             has_unified_memory: if available!(
                 macos = 10.15,
@@ -1229,6 +1231,7 @@ impl super::CapabilitiesQuery {
 
         features.set(F::DEPTH_CLIP_CONTROL, self.supports_depth_clip_control);
         features.set(F::PRIMITIVE_INDEX, self.supports_shader_primitive_index);
+        features.set(F::FRAMEBUFFER_FETCH, self.supports_framebuffer_fetch);
 
         features.set(
             F::TEXTURE_BINDING_ARRAY

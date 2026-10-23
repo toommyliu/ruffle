@@ -175,6 +175,7 @@ enum BuiltIn {
     Barycentric { perspective: bool },
     SampleIndex,
     SampleMask,
+    FramebufferFetch,
     GlobalInvocationId,
     LocalInvocationId,
     LocalInvocationIndex,
@@ -231,6 +232,7 @@ impl BuiltIn {
             },
             Self::SampleIndex => naga::BuiltIn::SampleIndex,
             Self::SampleMask => naga::BuiltIn::SampleMask,
+            Self::FramebufferFetch => naga::BuiltIn::FramebufferFetch,
             Self::GlobalInvocationId => naga::BuiltIn::GlobalInvocationId,
             Self::LocalInvocationId => naga::BuiltIn::LocalInvocationId,
             Self::LocalInvocationIndex => naga::BuiltIn::LocalInvocationIndex,
@@ -1170,6 +1172,7 @@ impl Interface {
                 naga::BuiltIn::Barycentric { perspective } => BuiltIn::Barycentric { perspective },
                 naga::BuiltIn::SampleIndex => BuiltIn::SampleIndex,
                 naga::BuiltIn::SampleMask => BuiltIn::SampleMask,
+                naga::BuiltIn::FramebufferFetch => BuiltIn::FramebufferFetch,
                 naga::BuiltIn::GlobalInvocationId => BuiltIn::GlobalInvocationId,
                 naga::BuiltIn::LocalInvocationId => BuiltIn::LocalInvocationId,
                 naga::BuiltIn::LocalInvocationIndex => BuiltIn::LocalInvocationIndex,
@@ -1724,7 +1727,7 @@ impl Interface {
                     self.limits.max_inter_stage_shader_variables;
 
                 let deductions = entry_point.inputs.iter().filter_map(|output| match output {
-                    Varying::Local { .. } => None,
+                    Varying::Local { .. } | Varying::BuiltIn(BuiltIn::FramebufferFetch) => None,
                     Varying::BuiltIn(builtin) => {
                         MaxFragmentShaderInputDeduction::from_inter_stage_builtin(builtin.to_naga())
                             .or_else(|| {

@@ -1359,6 +1359,16 @@ bitflags_array! {
         #[name("wgpu-passthrough-shaders", "passthrough-shaders")]
         const PASSTHROUGH_SHADERS = 1 << 52;
 
+        /// Allows fragment shaders to read color attachment 0 as it was before
+        /// the fragment, through a `@color(0)` input after `enable wgpu_framebuffer_fetch;`.
+        ///
+        /// Supported platforms:
+        /// - Metal, on Apple GPUs
+        ///
+        /// This is a native only feature.
+        #[name("wgpu-framebuffer-fetch")]
+        const FRAMEBUFFER_FETCH = 1 << 14;
+
         /// Enables shader barycentric coordinates.
         ///
         /// Supported platforms:
