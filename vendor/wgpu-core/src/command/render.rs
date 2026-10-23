@@ -2302,17 +2302,29 @@ pub(super) fn encode_render_pass(
 
     let mut indirect_draw_validation_batcher = crate::indirect_validation::DrawBatcher::new();
 
-    // We automatically keep extending command buffers over time, and because
-    // we want to insert a command buffer _before_ what we're about to record,
-    // we need to make sure to close the previous one.
-    parent_state
-        .raw_encoder
-        .close_if_open()
-        .map_pass_err(pass_scope)?;
-    let raw_encoder = parent_state
-        .raw_encoder
-        .open_pass(base.label.as_deref())
-        .map_pass_err(pass_scope)?;
+    let in_open_buffer = needs_nothing_before(
+        device,
+        &base,
+        &color_attachments,
+        depth_stencil_attachment.as_ref(),
+        timestamp_writes.is_some() || occlusion_query_set.is_some(),
+        parent_state.texture_memory_actions,
+    );
+    let raw_encoder = if in_open_buffer {
+        parent_state.raw_encoder.open().map_pass_err(pass_scope)?
+    } else {
+        // We automatically keep extending command buffers over time, and because
+        // we want to insert a command buffer _before_ what we're about to record,
+        // we need to make sure to close the previous one.
+        parent_state
+            .raw_encoder
+            .close_if_open()
+            .map_pass_err(pass_scope)?;
+        parent_state
+            .raw_encoder
+            .open_pass(base.label.as_deref())
+            .map_pass_err(pass_scope)?
+    };
 
     let (scope, pending_discard_init_fixups, mut pending_query_resets) = {
         let mut pending_query_resets = QueryResetMap::new();
@@ -2713,9 +2725,23 @@ pub(super) fn encode_render_pass(
 
         let pending_discard_init_fixups = state.pass.pending_discard_init_fixups;
 
-        parent_state.raw_encoder.close().map_pass_err(pass_scope)?;
+        if !in_open_buffer {
+            parent_state.raw_encoder.close().map_pass_err(pass_scope)?;
+        }
         (trackers, pending_discard_init_fixups, pending_query_resets)
     };
+
+    if in_open_buffer {
+        debug_assert!(pending_discard_init_fixups.is_empty());
+        let transit = parent_state.raw_encoder.open().map_pass_err(pass_scope)?;
+        CommandEncoder::insert_barriers_from_scope(
+            transit,
+            parent_state.tracker,
+            &scope,
+            parent_state.snatch_guard,
+        );
+        return Ok(());
+    }
 
     let encoder = &mut parent_state.raw_encoder;
     let tracker = &mut parent_state.tracker;
@@ -2765,6 +2791,44 @@ pub(super) fn encode_render_pass(
     encoder.close_and_swap().map_pass_err(pass_scope)?;
 
     Ok(())
+}
+
+/// wgpu-hal's Metal barriers are no-ops, so on Metal a pass that needs no
+/// discarded surface cleared, queries reset or indirect draws validated before
+/// it can go into the open command buffer, after the commands recorded before it.
+fn needs_nothing_before(
+    device: &Device,
+    base: &BasePass<ArcRenderCommand, Infallible>,
+    color_attachments: &ColorAttachments<Arc<TextureView>>,
+    depth_stencil_attachment: Option<&ResolvedRenderPassDepthStencilAttachment<Arc<TextureView>>>,
+    uses_queries: bool,
+    texture_memory_actions: &CommandBufferTextureMemoryActions,
+) -> bool {
+    let loads_discarded = |view: &TextureView| texture_memory_actions.has_discards_of(&view.parent);
+    device.backend() == wgt::Backend::Metal
+        && !uses_queries
+        && color_attachments.iter().flatten().all(|attachment| {
+            !matches!(attachment.load_op, LoadOp::Load) || !loads_discarded(&attachment.view)
+        })
+        && depth_stencil_attachment.is_none_or(|attachment| {
+            let aspects = attachment.view.desc.aspects();
+            let loads = (aspects.contains(hal::FormatAspects::DEPTH)
+                && matches!(attachment.depth.load_op(), LoadOp::Load))
+                || (aspects.contains(hal::FormatAspects::STENCIL)
+                    && matches!(attachment.stencil.load_op(), LoadOp::Load));
+            !loads || !loads_discarded(&attachment.view)
+        })
+        && base.commands.iter().all(|command| {
+            !matches!(
+                command,
+                ArcRenderCommand::DrawIndirect { .. }
+                    | ArcRenderCommand::MultiDrawIndirectCount { .. }
+                    | ArcRenderCommand::WriteTimestamp { .. }
+                    | ArcRenderCommand::BeginOcclusionQuery { .. }
+                    | ArcRenderCommand::BeginPipelineStatisticsQuery { .. }
+                    | ArcRenderCommand::ExecuteBundle(_)
+            )
+        })
 }
 
 fn set_pipeline(

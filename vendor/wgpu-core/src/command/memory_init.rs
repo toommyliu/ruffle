@@ -48,6 +48,12 @@ impl CommandBufferTextureMemoryActions {
         self.discards.push(discard);
     }
 
+    pub(crate) fn has_discards_of(&self, texture: &Texture) -> bool {
+        self.discards
+            .iter()
+            .any(|discard| core::ptr::eq(Arc::as_ptr(&discard.texture), texture))
+    }
+
     // Registers a TextureInitTrackerAction.
     // Returns previously discarded surface that need to be initialized *immediately* now.
     // Only returns a non-empty list if action is MemoryInitKind::NeedsInitializedMemory.
