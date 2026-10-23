@@ -263,6 +263,7 @@ impl GuiController {
     pub fn close_movie(&mut self, player: &mut PlayerController) {
         player.destroy();
         self.gui.on_player_destroyed();
+        self.window.request_redraw();
     }
 
     pub fn create_movie(
@@ -366,6 +367,7 @@ impl GuiController {
 
         let raw_input = self.egui_winit.take_egui_input(&self.window);
         let show_menu = self.window.fullscreen().is_none() && !self.no_gui;
+        self.last_update = Instant::now();
         let mut full_output = self.egui_winit.egui_ctx().run_ui(raw_input, |ui| {
             self.gui.update(
                 self.egui_winit.egui_ctx(),
@@ -507,8 +509,8 @@ impl GuiController {
         self.gui.is_context_menu_visible()
     }
 
-    pub fn needs_render(&self) -> bool {
-        Instant::now().duration_since(self.last_update) >= self.repaint_after
+    pub fn next_repaint_time(&self) -> Option<Instant> {
+        self.last_update.checked_add(self.repaint_after)
     }
 
     pub fn show_open_dialog(&mut self) {
@@ -517,6 +519,7 @@ impl GuiController {
 
     pub fn open_dialog(&mut self, dialog_event: DialogDescriptor) {
         self.gui.dialogs.open_dialog(dialog_event);
+        self.window.request_redraw();
     }
 
     pub fn set_ime_allowed(&self, allowed: bool) {
@@ -550,6 +553,7 @@ impl GuiController {
                 ExportBundleDialogConfiguration::new(content_descriptor, player_options),
             )));
         self.gui.on_player_destroyed();
+        self.window.request_redraw();
     }
 }
 
