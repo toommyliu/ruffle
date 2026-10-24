@@ -23,6 +23,11 @@ pub fn capture_and_compare_image(
 
     let actual_image = {
         let mut player_lock = player.lock().unwrap();
+        player_lock.mutate_with_update_context(|context| {
+            if let Some(text) = context.focus_tracker.get_as_edit_text() {
+                text.reset_selection_blinking();
+            }
+        });
         player_lock.render();
         render_interface.capture(player_lock.renderer_mut())
     };
