@@ -37,6 +37,10 @@ pub trait NavigatorInterface: Clone + Send + 'static {
         host: &str,
         port: u16,
     ) -> impl std::future::Future<Output = bool> + Send;
+
+    /// Called from a socket's task when it has data for the player, which only
+    /// takes it in on its next tick.
+    fn socket_data_arrived(&self) {}
 }
 
 pub trait FutureSpawner<Err> {
@@ -403,6 +407,7 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
                             if !send_action(&sender, action).await {
                                 return;
                             }
+                            interface.socket_data_arrived();
                         }
                     };
                 }

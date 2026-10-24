@@ -125,6 +125,14 @@ impl DesktopNavigatorInterface {
 }
 
 impl NavigatorInterface for DesktopNavigatorInterface {
+    fn socket_data_arrived(&self) {
+        let _ = self
+            .event_loop
+            .lock()
+            .expect("Non-poisoned event loop")
+            .send_event(RuffleEvent::SocketData);
+    }
+
     fn navigate_to_website(&self, url: Url) {
         let open_url_mode = self.preferences.open_url_mode();
         if open_url_mode == OpenUrlMode::Deny {
