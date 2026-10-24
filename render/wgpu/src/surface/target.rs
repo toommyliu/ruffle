@@ -192,14 +192,16 @@ impl StencilBuffer {
     }
 }
 
-/// With multisampling, a pass keeps its samples only while it runs: it
+/// With multisampling on Metal, a pass keeps its samples only while it runs: it
 /// resolves into one of two resolve buffers and discards them, and the next
 /// pass starts by drawing that image into the frame buffer and resolves into
 /// the other buffer (a pass can't sample the buffer it resolves into).
-/// Storing and reloading the samples instead moves the whole multisampled
-/// texture twice a pass, which dominates GPU time on large targets. The cost is
-/// that an edge drawn over one from an earlier pass blends with its resolved
-/// pixel, so the image depends slightly on where passes split.
+/// Apple GPUs hold samples in tile memory, and storing and reloading them
+/// moves the whole multisampled texture twice a pass, which dominates GPU time
+/// on large targets. The cost is that an edge drawn over one from an earlier
+/// pass blends with its resolved pixel, so the image depends slightly on where
+/// passes split. Other GPUs keep the samples in memory between passes, where
+/// redrawing the image costs more than keeping them.
 pub struct CommandTarget {
     frame_buffer: FrameBuffer,
     blend_buffer: OnceCell<BlendBuffer>,
@@ -211,6 +213,7 @@ pub struct CommandTarget {
     blend_buffer_parent_copy: OnceCell<wgpu::BindGroup>,
     reseed_parent_copies: [OnceCell<wgpu::BindGroup>; 2],
     frame_buffer_holds_image: Cell<bool>,
+    keep_samples: bool,
     depth: OnceCell<StencilBuffer>,
     globals: Arc<Globals>,
     size: wgpu::Extent3d,
@@ -231,6 +234,8 @@ impl CommandTarget {
         encoder: &mut wgpu::CommandEncoder,
     ) -> Self {
         let globals = pool.get_globals(descriptors, size.width, size.height);
+        let keep_samples =
+            descriptors.backend != wgpu::Backend::Metal || crate::stats::keep_samples();
 
         let mut make_pooled_frame_buffer = || {
             FrameBuffer::new(
@@ -238,7 +243,7 @@ impl CommandTarget {
                 sample_count,
                 size,
                 format,
-                if sample_count > 1 && !crate::stats::keep_samples() {
+                if sample_count > 1 && !keep_samples {
                     wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TRANSIENT_ATTACHMENT
                 } else if sample_count > 1 {
@@ -303,6 +308,7 @@ impl CommandTarget {
             blend_buffer_parent_copy: OnceCell::new(),
             reseed_parent_copies: Default::default(),
             frame_buffer_holds_image: Cell::new(false),
+            keep_samples,
             depth: OnceCell::new(),
             globals,
             size,
@@ -381,7 +387,7 @@ impl CommandTarget {
         } else {
             debug_assert!(self.resolve_buffer.is_none() || self.frame_buffer_holds_image.get());
         }
-        let keep_samples = self.resolve_buffer.is_none() || crate::stats::keep_samples();
+        let keep_samples = self.resolve_buffer.is_none() || self.keep_samples;
         self.frame_buffer_holds_image.set(keep_samples);
         Some(wgpu::RenderPassColorAttachment {
             view: self.frame_buffer.view(),
@@ -434,7 +440,7 @@ impl CommandTarget {
         let Some(primary) = self.resolve_buffer.as_ref() else {
             return (self.color_attachments(), None);
         };
-        let keep_samples = crate::stats::keep_samples();
+        let keep_samples = self.keep_samples;
         let clear_color = self
             .color_needs_clear
             .set(false)
