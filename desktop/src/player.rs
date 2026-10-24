@@ -271,6 +271,11 @@ impl ActivePlayer {
             GameModePreference::Off => false,
         };
 
+        #[cfg(feature = "stats")]
+        if std::env::var_os("RUFFLE_KEEP_SAMPLES").is_some() {
+            ruffle_render_wgpu::stats::KEEP_SAMPLES
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         #[cfg_attr(not(feature = "stats"), expect(unused_mut))]
         let mut renderer = WgpuRenderBackend::new(descriptors, movie_view)
             .map_err(|e| anyhow!(e.to_string()))
