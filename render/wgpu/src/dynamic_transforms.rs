@@ -4,7 +4,7 @@ use crate::{PosUvVertex, Transforms};
 use std::cell::RefCell;
 use std::mem;
 
-const ESTIMATED_OBJECTS_PER_CHUNK: u64 = 200;
+const MAX_TRANSFORMS_BYTES: u64 = 64 << 10;
 
 pub struct DynamicTransforms {
     pub buffer: wgpu::Buffer,
@@ -16,8 +16,10 @@ pub struct DynamicTransforms {
 }
 
 pub fn transforms_per_draw(limits: &wgpu::Limits) -> u64 {
-    let maximum = limits.max_uniform_buffer_binding_size / size_of::<Transforms>() as u64;
-    maximum.min(ESTIMATED_OBJECTS_PER_CHUNK)
+    limits
+        .max_uniform_buffer_binding_size
+        .min(MAX_TRANSFORMS_BYTES)
+        / size_of::<Transforms>() as u64
 }
 
 impl DynamicTransforms {
@@ -30,8 +32,10 @@ impl DynamicTransforms {
         });
         let vertex_buffer = descriptors.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (mem::size_of::<PosUvVertex>() as u64 * 4 * ESTIMATED_OBJECTS_PER_CHUNK)
-                .min(descriptors.limits.max_buffer_size),
+            size: (mem::size_of::<PosUvVertex>() as u64
+                * 4
+                * transforms_per_draw(&descriptors.limits))
+            .min(descriptors.limits.max_buffer_size),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
