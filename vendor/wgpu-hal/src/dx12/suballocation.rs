@@ -189,7 +189,7 @@ impl<'a> DeviceAllocationContext<'a> {
             self.create_committed_buffer(raw_desc, location)?
         };
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             resource.set_name(label)?;
         }
 
@@ -216,7 +216,7 @@ impl<'a> DeviceAllocationContext<'a> {
             self.create_committed_texture(desc, raw_desc)?
         };
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             resource.set_name(label)?;
         }
 
@@ -240,7 +240,7 @@ impl<'a> DeviceAllocationContext<'a> {
             self.create_committed_acceleration_structure(desc, raw_desc)?
         };
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             resource.set_name(label)?;
         }
 

@@ -761,6 +761,16 @@ struct DeviceShared {
 unsafe impl Send for DeviceShared {}
 unsafe impl Sync for DeviceShared {}
 
+impl DeviceShared {
+    fn debug_label<'a>(&self, label: crate::Label<'a>) -> crate::Label<'a> {
+        label.filter(|_| {
+            self.private_caps
+                .instance_flags
+                .contains(wgt::InstanceFlags::DEBUG)
+        })
+    }
+}
+
 pub struct Device {
     raw: Direct3D12::ID3D12Device,
     present_queue: Direct3D12::ID3D12CommandQueue,

@@ -415,7 +415,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
             .into_device_result("Create command list")?
         };
 
-        if let Some(label) = label {
+        if let Some(label) = self.shared.debug_label(label) {
             list.set_name(label)?;
         }
 

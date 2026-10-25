@@ -810,7 +810,7 @@ impl crate::Device for super::Device {
         }
         .into_device_result("Command allocator creation")?;
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             allocator.set_name(label)?;
         }
 
@@ -1463,7 +1463,7 @@ impl crate::Device for super::Device {
             None
         };
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             raw.set_name(label)?;
         }
 
@@ -2191,7 +2191,7 @@ impl crate::Device for super::Device {
                 }
             };
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             raw.set_name(label)?;
         }
 
@@ -2241,7 +2241,7 @@ impl crate::Device for super::Device {
             crate::PipelineError::Linkage(wgt::ShaderStages::COMPUTE, err.to_string())
         })?;
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             raw.set_name(label)?;
         }
 
@@ -2340,7 +2340,7 @@ impl crate::Device for super::Device {
 
         let raw = raw.ok_or(crate::DeviceError::Unexpected)?;
 
-        if let Some(label) = desc.label {
+        if let Some(label) = self.shared.debug_label(desc.label) {
             raw.set_name(label)?;
         }
 
