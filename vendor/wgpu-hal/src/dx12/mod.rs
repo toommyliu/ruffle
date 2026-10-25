@@ -92,7 +92,7 @@ mod suballocation;
 mod types;
 mod view;
 
-use alloc::{borrow::ToOwned as _, string::String, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned as _, boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::{ffi, fmt, mem, ops::Deref, sync::atomic::AtomicU64};
 
 use arrayvec::ArrayVec;
@@ -781,6 +781,7 @@ pub struct Device {
     mem_allocator: Allocator,
     compiler_container: Arc<shader_compilation::CompilerContainer>,
     shader_cache: Mutex<ShaderCache>,
+    sampler_index_buffers: Mutex<HashMap<Box<[sampler::SamplerIndex]>, SamplerIndexBuffer>>,
     counters: Arc<wgt::HalCounters>,
     limits: wgt::Limits,
 }
@@ -1242,12 +1243,13 @@ enum DynamicBuffer {
 struct SamplerIndexBuffer {
     buffer: Direct3D12::ID3D12Resource,
     allocation: suballocation::Allocation,
+    bind_groups: usize,
 }
 
 #[derive(Debug)]
 pub struct BindGroup {
     handle_views: Option<descriptor::DualHandle>,
-    sampler_index_buffer: Option<SamplerIndexBuffer>,
+    sampler_indexes: Option<Box<[sampler::SamplerIndex]>>,
     dynamic_buffers: Vec<DynamicBuffer>,
 }
 

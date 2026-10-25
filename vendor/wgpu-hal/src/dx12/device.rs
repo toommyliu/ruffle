@@ -1,6 +1,5 @@
 use alloc::borrow::ToOwned;
 use alloc::{
-    borrow::Cow,
     string::{String, ToString as _},
     sync::Arc,
     vec::Vec,
@@ -227,6 +226,7 @@ impl super::Device {
             mem_allocator,
             compiler_container,
             shader_cache: Default::default(),
+            sampler_index_buffers: Default::default(),
             counters: Default::default(),
             limits: limits.clone(),
         })
@@ -1759,42 +1759,52 @@ impl crate::Device for super::Device {
             }
         }
 
-        let sampler_index_buffer = if !sampler_indexes.is_empty() {
-            let buffer_size = (sampler_indexes.len() * size_of::<u32>()) as u64;
+        let sampler_indexes = if sampler_indexes.is_empty() {
+            None
+        } else {
+            let sampler_indexes = sampler_indexes.into_boxed_slice();
+            let mut buffers = self.sampler_index_buffers.lock();
+            if !buffers.contains_key(&sampler_indexes) {
+                let buffer_size = (sampler_indexes.len() * size_of::<u32>()) as u64;
+                let buffer_desc = crate::BufferDescriptor {
+                    label: Some("Internal Sampler Index Buffer"),
+                    size: buffer_size,
+                    usage: wgt::BufferUses::STORAGE_READ_ONLY | wgt::BufferUses::MAP_WRITE,
+                    // D3D12 backend doesn't care about the memory flags
+                    memory_flags: crate::MemoryFlags::empty(),
+                };
 
-            let label = if let Some(label) = desc.label {
-                Cow::Owned(format!("{label} (Internal Sampler Index Buffer)"))
-            } else {
-                Cow::Borrowed("Internal Sampler Index Buffer")
-            };
+                let (buffer, allocation) = suballocation::DeviceAllocationContext::from(self)
+                    .create_buffer(&buffer_desc)?;
 
-            let buffer_desc = crate::BufferDescriptor {
-                label: Some(&label),
-                size: buffer_size,
-                usage: wgt::BufferUses::STORAGE_READ_ONLY | wgt::BufferUses::MAP_WRITE,
-                // D3D12 backend doesn't care about the memory flags
-                memory_flags: crate::MemoryFlags::empty(),
-            };
+                let mut mapping = ptr::null_mut::<ffi::c_void>();
+                unsafe { buffer.Map(0, None, Some(&mut mapping)) }.into_device_result("Map")?;
 
-            let (buffer, allocation) =
-                suballocation::DeviceAllocationContext::from(self).create_buffer(&buffer_desc)?;
+                assert!(!mapping.is_null());
+                assert_eq!(mapping as usize % 4, 0);
 
-            let mut mapping = ptr::null_mut::<ffi::c_void>();
-            unsafe { buffer.Map(0, None, Some(&mut mapping)) }.into_device_result("Map")?;
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        sampler_indexes.as_ptr(),
+                        mapping.cast(),
+                        sampler_indexes.len(),
+                    )
+                };
 
-            assert!(!mapping.is_null());
-            assert_eq!(mapping as usize % 4, 0);
+                // The unmapping is not needed, as all memory is coherent in d3d12, but lets be nice to our address space.
+                unsafe { buffer.Unmap(0, None) };
 
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    sampler_indexes.as_ptr(),
-                    mapping.cast(),
-                    sampler_indexes.len(),
-                )
-            };
-
-            // The unmapping is not needed, as all memory is coherent in d3d12, but lets be nice to our address space.
-            unsafe { buffer.Unmap(0, None) };
+                buffers.insert(
+                    sampler_indexes.clone(),
+                    super::SamplerIndexBuffer {
+                        buffer,
+                        allocation,
+                        bind_groups: 0,
+                    },
+                );
+            }
+            let shared = buffers.get_mut(&sampler_indexes).unwrap();
+            shared.bind_groups += 1;
 
             let srv_desc = Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC {
                 Format: Dxgi::Common::DXGI_FORMAT_UNKNOWN,
@@ -1816,14 +1826,12 @@ impl crate::Device for super::Device {
 
             unsafe {
                 self.raw
-                    .CreateShaderResourceView(&buffer, Some(&srv_desc), srv)
+                    .CreateShaderResourceView(&shared.buffer, Some(&srv_desc), srv)
             };
 
             cpu_views.as_mut().unwrap().stage.push(srv);
 
-            Some(super::SamplerIndexBuffer { buffer, allocation })
-        } else {
-            None
+            Some(sampler_indexes)
         };
 
         let handle_views = match cpu_views {
@@ -1845,7 +1853,7 @@ impl crate::Device for super::Device {
 
         Ok(super::BindGroup {
             handle_views,
-            sampler_index_buffer,
+            sampler_indexes,
             dynamic_buffers,
         })
     }
@@ -1855,9 +1863,15 @@ impl crate::Device for super::Device {
             self.shared.heap_views.free_slice(dual);
         }
 
-        if let Some(sampler_buffer) = group.sampler_index_buffer {
-            suballocation::DeviceAllocationContext::from(self)
-                .free_resource(sampler_buffer.buffer, sampler_buffer.allocation);
+        if let Some(sampler_indexes) = group.sampler_indexes {
+            let mut buffers = self.sampler_index_buffers.lock();
+            let shared = buffers.get_mut(&sampler_indexes).unwrap();
+            shared.bind_groups -= 1;
+            if shared.bind_groups == 0 {
+                let shared = buffers.remove(&sampler_indexes).unwrap();
+                suballocation::DeviceAllocationContext::from(self)
+                    .free_resource(shared.buffer, shared.allocation);
+            }
         }
 
         self.counters.bind_groups.sub(1);
