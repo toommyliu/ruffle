@@ -201,9 +201,12 @@ impl<'a> DeviceAllocationContext<'a> {
     pub(crate) fn create_texture(
         &self,
         desc: &crate::TextureDescriptor,
-        raw_desc: Direct3D12::D3D12_RESOURCE_DESC,
+        mut raw_desc: Direct3D12::D3D12_RESOURCE_DESC,
     ) -> Result<(Direct3D12::ID3D12Resource, Allocation), crate::DeviceError> {
         let location = MemoryLocation::GpuOnly;
+        if self.shared.private_caps.suballocation_supported {
+            raw_desc = self.with_small_alignment(raw_desc);
+        }
         let allocation_info =
             self.error_if_would_oom_on_resource_allocation(&raw_desc, location)?;
 
@@ -534,6 +537,30 @@ impl<'a> DeviceAllocationContext<'a> {
         let wrapped_allocation = Allocation::none(AllocationType::AccelerationStructure, desc.size);
 
         Ok((resource, wrapped_allocation))
+    }
+
+    fn with_small_alignment(
+        &self,
+        raw_desc: Direct3D12::D3D12_RESOURCE_DESC,
+    ) -> Direct3D12::D3D12_RESOURCE_DESC {
+        let target_flags = Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+            | Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        if (raw_desc.Flags & target_flags).0 != 0 || raw_desc.SampleDesc.Count > 1 {
+            return raw_desc;
+        }
+        let small_desc = Direct3D12::D3D12_RESOURCE_DESC {
+            Alignment: Direct3D12::D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT as u64,
+            ..raw_desc
+        };
+        let allocation_info = unsafe {
+            self.raw
+                .GetResourceAllocationInfo(0, core::slice::from_ref(&small_desc))
+        };
+        if allocation_info.Alignment == small_desc.Alignment {
+            small_desc
+        } else {
+            raw_desc
+        }
     }
 
     fn error_if_would_oom_on_resource_allocation(
