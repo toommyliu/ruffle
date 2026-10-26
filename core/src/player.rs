@@ -421,6 +421,8 @@ pub struct Player {
 
     frames_run: u64,
 
+    frame_interpolation: bool,
+
     /// Faked time passage for fooling hand-written busy-loop FPS limiters.
     time_offset: u32,
 
@@ -959,7 +961,20 @@ impl Player {
     }
 
     pub fn needs_render(&self) -> bool {
-        self.needs_render
+        self.needs_render || self.interpolating()
+    }
+
+    pub fn interpolating(&self) -> bool {
+        self.frame_interpolation && self.is_playing() && self.frame_rate >= 10.0
+    }
+
+    pub fn frame_interpolation(&self) -> bool {
+        self.frame_interpolation
+    }
+
+    pub fn set_frame_interpolation(&mut self, value: bool) {
+        self.frame_interpolation = value;
+        self.needs_render = true;
     }
 
     pub fn background_color(&mut self) -> Option<Color> {
@@ -2133,6 +2148,16 @@ impl Player {
 
         let mut background_color = Color::WHITE;
 
+        let interpolation = self.interpolating().then(|| {
+            let frame_duration = self.frame_duration().as_millis();
+            let alpha = if frame_duration > 0.0 {
+                self.frame_accumulator.as_millis() / frame_duration
+            } else {
+                1.0
+            };
+            (self.frames_run, alpha.clamp(0.0, 1.0) as f32)
+        });
+
         let (cache_draws, commands) = self.enter_arena_mut(|gc_context, gc_root, this| {
             let stage = gc_root.stage;
 
@@ -2149,6 +2174,8 @@ impl Player {
                 use_bitmap_cache: true,
                 stage,
                 scale9: None,
+                interpolation,
+                cache_root: None,
             };
 
             stage.render_viewport(&mut render_context);
@@ -3159,6 +3186,7 @@ impl PlayerBuilder {
                 frame_phase: Default::default(),
                 frame_accumulator: FloatDuration::ZERO,
                 frames_run: 0,
+                frame_interpolation: false,
                 start_time: Instant::now(),
                 time_offset: 0,
                 time_til_next_timer: None,

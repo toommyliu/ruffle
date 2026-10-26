@@ -387,6 +387,11 @@ impl RuffleHandle {
         let _ = self.with_core_mut(|core| core.set_volume(value));
     }
 
+    pub fn set_frame_interpolation(&self, value: bool) {
+        let _ = self.with_core_mut(|core| core.set_frame_interpolation(value));
+        let _ = self.with_instance(|instance| instance.wake());
+    }
+
     pub fn set_rendering_suspended(&self, value: bool) {
         let _ = self.with_instance_mut(|instance| {
             instance.rendering = match (value, instance.rendering) {
@@ -1412,9 +1417,13 @@ impl RuffleHandle {
             }
             timings.report(core, frame_observer.as_ref());
 
-            next_frame_in = core
-                .is_playing()
-                .then(|| core.time_til_next_frame().as_secs_f64() * 1000.0);
+            next_frame_in = core.is_playing().then(|| {
+                if core.interpolating() && !matches!(rendering, Rendering::Suspended) {
+                    0.0
+                } else {
+                    core.time_til_next_frame().as_secs_f64() * 1000.0
+                }
+            });
             if sampling != Sampling::Multisample {
                 stage_sample_count = core.quality().sample_count();
             }

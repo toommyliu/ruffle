@@ -211,6 +211,7 @@ export class InnerPlayer {
     private volumeSettings: VolumeControls;
     private renderScaleSetting = 1.0;
     private renderingSuspendedSetting = false;
+    private smoothMotionSetting = false;
     private readonly debugPlayerInfo: () => string;
     protected readonly onCallbackAvailable: (name: string) => void;
     private readonly onFSCommand: ((command: string, args: string) => void)[] =
@@ -784,6 +785,7 @@ export class InnerPlayer {
         });
         this.instance!.set_render_scale(this.renderScaleSetting);
         this.instance!.set_rendering_suspended(this.renderingSuspendedSetting);
+        this.instance!.set_frame_interpolation(this.smoothMotionSetting);
         this.frameStats.setInstance(this.instance);
 
         this.rendererDebugInfo = this.instance!.renderer_debug_info();
@@ -1127,6 +1129,15 @@ export class InnerPlayer {
     set renderScale(value: number) {
         this.renderScaleSetting = value;
         this.instance?.set_render_scale(value);
+    }
+
+    get smoothMotion(): boolean {
+        return this.smoothMotionSetting;
+    }
+
+    set smoothMotion(value: boolean) {
+        this.smoothMotionSetting = value;
+        this.instance?.set_frame_interpolation(value);
     }
 
     get renderingSuspended(): boolean {
@@ -1620,6 +1631,15 @@ export class InnerPlayer {
             checked: this.frameStats.visible,
             onClick: async () =>
                 this.frameStats.setVisible(!this.frameStats.visible),
+        });
+
+        items.push({
+            text: text("context-menu-smooth-motion"),
+            checked: this.smoothMotion,
+            onClick: async () => {
+                this.smoothMotion = !this.smoothMotion;
+                this.element.dispatchEvent(new Event("smoothmotionchange"));
+            },
         });
 
         if (

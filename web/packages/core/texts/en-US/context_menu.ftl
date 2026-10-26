@@ -8,3 +8,4 @@ context-menu-about-ruffle =
 context-menu-hide = Hide This Menu
 context-menu-volume-controls = Volume Controls
 context-menu-frame-stats = Frame Stats
+context-menu-smooth-motion = Smooth Motion

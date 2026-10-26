@@ -68,6 +68,14 @@ export class PlayerV1Impl implements PlayerV1 {
         this.#inner.renderScale = value;
     }
 
+    get smoothMotion(): boolean {
+        return this.#inner.smoothMotion;
+    }
+
+    set smoothMotion(value: boolean) {
+        this.#inner.smoothMotion = value;
+    }
+
     get renderingSuspended(): boolean {
         return this.#inner.renderingSuspended;
     }

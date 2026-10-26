@@ -608,6 +608,10 @@ pub struct RenderContext<'a, 'gc> {
 
     /// The object being drawn whose scaling grid slices its drawing and its children's shapes.
     pub scale9: Option<(DisplayObject<'gc>, Scale9)>,
+
+    pub interpolation: Option<(u64, f32)>,
+
+    pub cache_root: Option<DisplayObject<'gc>>,
 }
 
 impl<'gc> RenderContext<'_, 'gc> {
