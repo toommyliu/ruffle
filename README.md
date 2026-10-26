@@ -3,9 +3,9 @@
 Experimental patches for [Ruffle](https://github.com/ruffle-rs/ruffle) that make AdventureQuest Worlds run noticeably smoother.
 
 > [!NOTE]
-> These patches are for Ruffle's web player, not the desktop app. They've only been tested on an Apple Silicon Mac, so they may run differently on other hardware.
+> These patches target Ruffle's web player and haven't been tested on desktop, though changes can affect both. For desktop work, see the [desktop branch](https://github.com/toommyliu/ruffle/tree/desktop). They've only been tested on an Apple Silicon Mac, so they may run differently on other hardware.
 
-Based on upstream `e2643c2d1`; `git log e2643c2d1..` lists the patches.
+Based on upstream [`e2643c2d1`](https://github.com/ruffle-rs/ruffle/commit/e2643c2d1); `git log e2643c2d1..` lists the patches.
 
 ## Building
 
