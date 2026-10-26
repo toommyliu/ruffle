@@ -34,6 +34,8 @@ import { configureBuilder } from "../builder.js";
 
 const DIMENSION_REGEX = /^\s*(\d+(\.\d+)?(%)?)/;
 
+const SMOOTH_MOTION_KEY = "ruffle-smooth-motion";
+
 let isAudioContextUnmuted = false;
 
 // Safari still requires prefixed fullscreen APIs, see:
@@ -211,7 +213,7 @@ export class InnerPlayer {
     private volumeSettings: VolumeControls;
     private renderScaleSetting = 1.0;
     private renderingSuspendedSetting = false;
-    private smoothMotionSetting = false;
+    private smoothMotionSetting = loadSmoothMotion();
     private readonly debugPlayerInfo: () => string;
     protected readonly onCallbackAvailable: (name: string) => void;
     private readonly onFSCommand: ((command: string, args: string) => void)[] =
@@ -1131,15 +1133,6 @@ export class InnerPlayer {
         this.instance?.set_render_scale(value);
     }
 
-    get smoothMotion(): boolean {
-        return this.smoothMotionSetting;
-    }
-
-    set smoothMotion(value: boolean) {
-        this.smoothMotionSetting = value;
-        this.instance?.set_frame_interpolation(value);
-    }
-
     get renderingSuspended(): boolean {
         return this.renderingSuspendedSetting;
     }
@@ -1635,10 +1628,20 @@ export class InnerPlayer {
 
         items.push({
             text: text("context-menu-smooth-motion"),
-            checked: this.smoothMotion,
+            checked: this.smoothMotionSetting,
             onClick: async () => {
-                this.smoothMotion = !this.smoothMotion;
-                this.element.dispatchEvent(new Event("smoothmotionchange"));
+                this.smoothMotionSetting = !this.smoothMotionSetting;
+                this.instance?.set_frame_interpolation(
+                    this.smoothMotionSetting,
+                );
+                try {
+                    localStorage.setItem(
+                        SMOOTH_MOTION_KEY,
+                        String(this.smoothMotionSetting),
+                    );
+                } catch {
+                    // Ignored: without storage, the choice isn't remembered
+                }
             },
         });
 
@@ -2626,6 +2629,19 @@ function isB64SOL(solData: string): boolean {
         const decodedData = atob(solData);
         return isSolData(decodedData);
     } catch (_e) {
+        return false;
+    }
+}
+
+/**
+ * Read the Smooth Motion choice last made in the context menu.
+ *
+ * @returns True if Smooth Motion was turned on.
+ */
+function loadSmoothMotion(): boolean {
+    try {
+        return localStorage.getItem(SMOOTH_MOTION_KEY) === "true";
+    } catch {
         return false;
     }
 }

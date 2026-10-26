@@ -129,22 +129,6 @@ export interface PlayerV1 {
     set renderScale(value: number);
 
     /**
-     * Returns whether Smooth Motion is on.
-     *
-     * @returns True if moving objects are drawn between frames.
-     */
-    get smoothMotion(): boolean;
-
-    /**
-     * Turns Smooth Motion on or off: drawing every display frame, with moving
-     * objects between their last two positions, one movie frame behind.
-     * The context menu's toggle fires `smoothmotionchange` on the player.
-     *
-     * @param value True to turn Smooth Motion on.
-     */
-    set smoothMotion(value: boolean);
-
-    /**
      * Returns whether the player has stopped drawing the movie.
      *
      * @returns True if the movie keeps running without being drawn.
