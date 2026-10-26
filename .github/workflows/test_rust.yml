@@ -2,9 +2,9 @@ name: Test Rust
 
 on:
   push:
-    branches: [main]
+    branches: [desktop]
   pull_request:
-    branches: [main]
+    branches: [desktop]
   workflow_dispatch:
 
 concurrency:
