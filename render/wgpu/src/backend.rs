@@ -1059,15 +1059,15 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         commands: CommandList,
         cache_entries: Vec<BitmapCacheEntry>,
     ) {
-        let Some(frame_output) = self.target.get_next_texture() else {
+        let frame_output = self.target.get_next_texture();
+        if frame_output.is_none() {
             // Attempt to recreate the swap chain in this case.
             self.target.resize(
                 &self.descriptors.device,
                 self.target.width(),
                 self.target.height(),
             );
-            return;
-        };
+        }
 
         // Caches drawn into the atlas are finished later than their turn, so a
         // cache that another one draws mustn't be deferred past it.
@@ -1154,31 +1154,40 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         }
         self.draw_cache_atlas(atlas);
 
-        self.surface.draw_commands_and_copy_to(
-            frame_output.view(),
-            RenderTargetMode::FreshWithColor(wgpu::Color {
-                r: f64::from(clear.r) / 255.0,
-                g: f64::from(clear.g) / 255.0,
-                b: f64::from(clear.b) / 255.0,
-                a: f64::from(clear.a) / 255.0,
-            }),
-            &self.descriptors,
-            &mut self.active_frame.staging_belt,
-            &self.dynamic_transforms,
-            &mut self
-                .profiler
-                .scope("Frame commands", &mut self.active_frame.command_encoder),
-            &self.meshes,
-            commands,
-            LayerRef::None,
-            &mut self.texture_pool,
-        );
+        if let Some(frame_output) = &frame_output {
+            self.surface.draw_commands_and_copy_to(
+                frame_output.view(),
+                RenderTargetMode::FreshWithColor(wgpu::Color {
+                    r: f64::from(clear.r) / 255.0,
+                    g: f64::from(clear.g) / 255.0,
+                    b: f64::from(clear.b) / 255.0,
+                    a: f64::from(clear.a) / 255.0,
+                }),
+                &self.descriptors,
+                &mut self.active_frame.staging_belt,
+                &self.dynamic_transforms,
+                &mut self
+                    .profiler
+                    .scope("Frame commands", &mut self.active_frame.command_encoder),
+                &self.meshes,
+                commands,
+                LayerRef::None,
+                &mut self.texture_pool,
+            );
+        }
         self.profiler
             .resolve_queries(&mut self.active_frame.command_encoder);
         self.active_frame.staging_belt.finish();
 
-        self.active_frame
-            .submit_for_target(&self.descriptors, &self.target, frame_output);
+        match frame_output {
+            Some(frame_output) => {
+                self.active_frame
+                    .submit_for_target(&self.descriptors, &self.target, frame_output);
+            }
+            None => {
+                self.active_frame.submit_direct(&self.descriptors);
+            }
+        }
         self.offscreen_texture_pool.end_frame(
             OFFSCREEN_TEXTURE_MAX_IDLE_FRAMES,
             TEXTURE_POOL_MAX_IDLE_BYTES,
