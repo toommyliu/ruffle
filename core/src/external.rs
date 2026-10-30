@@ -262,6 +262,16 @@ impl Value {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CallbackError {
+    #[error("The AVM1 root is not ready")]
+    NotReady,
+    #[error("{0}")]
+    Thrown(String),
+    #[error("Could not convert callback reply: {0}")]
+    ReplyConversion(String),
+}
+
 #[derive(Collect, Clone)]
 #[collect(no_drop)]
 pub enum Callback<'gc> {
@@ -281,27 +291,64 @@ impl<'gc> Callback<'gc> {
         name: &str,
         args: impl IntoIterator<Item = Value>,
     ) -> Value {
+        self.call_inner(context, name, args, false)
+            .unwrap_or(Value::Null)
+    }
+
+    pub fn call_result(
+        &self,
+        context: &mut UpdateContext<'gc>,
+        name: &str,
+        args: impl IntoIterator<Item = Value>,
+    ) -> Result<Value, CallbackError> {
+        self.call_inner(context, name, args, true)
+    }
+
+    fn call_inner(
+        &self,
+        context: &mut UpdateContext<'gc>,
+        name: &str,
+        args: impl IntoIterator<Item = Value>,
+        capture_errors: bool,
+    ) -> Result<Value, CallbackError> {
         match self {
             Callback::Avm1 { this, method } => {
-                if let Some(base_clip) = context.stage.root_clip() {
-                    let mut activation = Avm1Activation::from_nothing(
-                        context,
-                        Avm1ActivationIdentifier::root("[ExternalInterface]"),
-                        base_clip,
-                    );
-                    let args: Vec<Avm1Value> = args
-                        .into_iter()
-                        .map(|v| v.into_avm1(&mut activation))
-                        .collect();
-                    let name = AvmString::new_utf8(activation.gc(), name);
-                    if let Ok(result) = method
-                        .call(name, &mut activation, *this, &args)
-                        .and_then(|value| Value::from_avm1(&mut activation, value))
-                    {
-                        return result;
+                let Some(base_clip) = context.stage.root_clip() else {
+                    return Err(CallbackError::NotReady);
+                };
+                let mut activation = Avm1Activation::from_nothing(
+                    context,
+                    Avm1ActivationIdentifier::root("[ExternalInterface]"),
+                    base_clip,
+                );
+                let args: Vec<Avm1Value> = args
+                    .into_iter()
+                    .map(|v| v.into_avm1(&mut activation))
+                    .collect();
+                let name = AvmString::new_utf8(activation.gc(), name);
+                let (result, converting_reply) =
+                    match method.call(name, &mut activation, *this, &args) {
+                        Ok(value) => (Value::from_avm1(&mut activation, value), true),
+                        Err(err) => (Err(err), false),
+                    };
+                match result {
+                    Ok(result) => Ok(result),
+                    Err(_) if !capture_errors => Ok(Value::Null),
+                    Err(err) => {
+                        let message = match err {
+                            Avm1Error::ThrownValue(value) => value
+                                .coerce_to_string(&mut activation)
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|_| "[type Object]".into()),
+                            err => err.to_string(),
+                        };
+                        Err(if converting_reply {
+                            CallbackError::ReplyConversion(message)
+                        } else {
+                            CallbackError::Thrown(message)
+                        })
                     }
                 }
-                Value::Null
             }
             Callback::Avm2 { method } => {
                 let domain = context
@@ -320,16 +367,28 @@ impl<'gc> Callback<'gc> {
                     Avm2Value::Null,
                     FunctionArgs::from_slice(&args),
                 );
-                match result.and_then(|value| Value::from_avm2(&mut activation, value)) {
-                    Ok(result) => result,
-                    Err(err) => {
+                let (result, converting_reply) = match result {
+                    Ok(value) => (Value::from_avm2(&mut activation, value), true),
+                    Err(err) => (Err(err), false),
+                };
+                match result {
+                    Ok(result) => Ok(result),
+                    Err(err) if !capture_errors => {
                         Avm2::uncaught_error(
                             &mut activation,
                             Some(method.executable().as_method().owner_movie()),
                             err,
                             "Error in AVM2 external interface callback",
                         );
-                        Value::Null
+                        Ok(Value::Null)
+                    }
+                    Err(err) => {
+                        let message = err.to_string(&mut activation);
+                        Err(if converting_reply {
+                            CallbackError::ReplyConversion(message)
+                        } else {
+                            CallbackError::Thrown(message)
+                        })
                     }
                 }
             }
@@ -419,5 +478,31 @@ impl<'gc> ExternalInterface<'gc> {
 
     pub fn invoke_fs_command(&self, command: &str, args: &str) -> bool {
         self.fs_commands.on_fs_command(command, args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Avm1Object, Avm1Value, Callback, CallbackError, Value};
+    use crate::PlayerBuilder;
+
+    #[test]
+    fn avm1_callback_without_root_is_not_ready() {
+        let player = PlayerBuilder::new().build();
+        player
+            .lock()
+            .unwrap()
+            .mutate_with_update_context(|context| {
+                assert!(context.stage.root_clip().is_none());
+                let callback = Callback::Avm1 {
+                    this: Avm1Value::Null,
+                    method: Avm1Object::new_without_proto(context.gc()),
+                };
+                assert_eq!(
+                    callback.call_result(context, "callback", []),
+                    Err(CallbackError::NotReady)
+                );
+                assert_eq!(callback.call(context, "callback", []), Value::Null);
+            });
     }
 }
