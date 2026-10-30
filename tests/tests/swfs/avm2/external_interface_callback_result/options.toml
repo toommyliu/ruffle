@@ -1,0 +1,10 @@
+num_frames = 2
+
+[player_options]
+mode = "Release"
+
+[[compilers]]
+type = "Asc"
+swf_version = 15
+class = "Test"
+scripts = ["Test.as"]

@@ -1,5 +1,5 @@
 use crate::external_interface::ExternalInterfaceTestProvider;
-use ruffle_core::external::Value as ExternalValue;
+use ruffle_core::external::{CallbackError, Value as ExternalValue};
 use ruffle_test_framework::environment::Environment;
 use ruffle_test_framework::options::TestOptions;
 use ruffle_test_framework::runner::TestStatus;
@@ -7,6 +7,143 @@ use ruffle_test_framework::test::Test;
 use ruffle_test_framework::vfs::{PhysicalFS, VfsPath};
 use std::collections::BTreeMap;
 use std::thread::sleep;
+
+pub fn external_interface_callback_result(
+    environment: &impl Environment,
+    vm: &str,
+) -> Result<(), libtest_mimic::Failed> {
+    let root = VfsPath::new(PhysicalFS::new(format!(
+        "tests/swfs/{vm}/external_interface_callback_result/"
+    )));
+    let test = Test::from_options(
+        TestOptions::read(&root.join("options.toml")?)?,
+        root,
+        format!("external_interface_callback_result_{vm}"),
+    )?;
+    let mut runner = test.create_test_runner(environment)?;
+    runner
+        .player()
+        .lock()
+        .unwrap()
+        .set_external_interface_provider(Some(Box::new(ExternalInterfaceTestProvider::new())));
+
+    let mut checked = false;
+    loop {
+        match runner.tick()? {
+            TestStatus::Continue => {}
+            TestStatus::Sleep(duration) => sleep(duration),
+            TestStatus::Finished => break,
+        }
+        if !runner.is_preloaded() || checked {
+            continue;
+        }
+        checked = true;
+        runner
+            .player()
+            .lock()
+            .unwrap()
+            .mutate_with_update_context(|context| {
+                let mut call = |name: &str, args: Vec<ExternalValue>| {
+                    context
+                        .external_interface
+                        .get_callback(name)
+                        .unwrap()
+                        .call_result(context, name, args)
+                };
+                assert_eq!(
+                    call("returnValue", vec![ExternalValue::Null]),
+                    Ok(ExternalValue::Null)
+                );
+                assert_eq!(
+                    call("returnValue", vec![ExternalValue::Undefined]),
+                    Ok(ExternalValue::Undefined)
+                );
+                assert_eq!(
+                    call("returnValue", vec!["reply".into()]),
+                    Ok("reply".into())
+                );
+                let Err(CallbackError::Thrown(message)) =
+                    call("throwString", vec!["callback failed".into()])
+                else {
+                    panic!("Expected a thrown callback error");
+                };
+                assert_eq!(message.lines().next(), Some("callback failed"));
+                if vm == "avm1" {
+                    assert_eq!(message, "callback failed");
+                    assert_eq!(
+                        call("throwUnprintable", vec![]),
+                        Err(CallbackError::Thrown("[type Object]".into()))
+                    );
+                } else {
+                    assert!(message.contains("\n\tat "), "Missing stack: {message}");
+                    let Err(CallbackError::Thrown(message)) = call("throwError", vec![]) else {
+                        panic!("Expected a thrown Error object");
+                    };
+                    assert_eq!(message.lines().next(), Some("Error: error object failed"));
+                    assert!(message.contains("\n\tat "), "Missing stack: {message}");
+                    assert_eq!(
+                        call("throwUnprintable", vec![]),
+                        Err(CallbackError::Thrown(
+                            "<failed to display AVM error>".into()
+                        ))
+                    );
+                }
+                if vm == "avm2" {
+                    assert_eq!(call("uncaughtCount", vec![]), Ok(0.into()));
+                } else {
+                    assert_eq!(
+                        call("returnBadValue", vec![]),
+                        Err(CallbackError::ReplyConversion("conversion failed".into()))
+                    );
+                }
+                let callback = context
+                    .external_interface
+                    .get_callback("throwString")
+                    .unwrap();
+                assert_eq!(
+                    callback.call(context, "throwString", ["legacy failed".into()]),
+                    ExternalValue::Null
+                );
+                if vm == "avm2" {
+                    let callback = context
+                        .external_interface
+                        .get_callback("uncaughtCount")
+                        .unwrap();
+                    assert_eq!(
+                        callback.call_result(context, "uncaughtCount", []),
+                        Ok(1.into())
+                    );
+                } else {
+                    let callback = context
+                        .external_interface
+                        .get_callback("returnBadValue")
+                        .unwrap();
+                    assert_eq!(
+                        callback.call(context, "returnBadValue", []),
+                        ExternalValue::Null
+                    );
+                    let callback = context
+                        .external_interface
+                        .get_callback("throwUnprintable")
+                        .unwrap();
+                    assert_eq!(
+                        callback.call(context, "throwUnprintable", []),
+                        ExternalValue::Null
+                    );
+                    let counter = context
+                        .external_interface
+                        .get_callback("stringificationCount")
+                        .unwrap();
+                    assert_eq!(
+                        counter.call_result(context, "stringificationCount", []),
+                        Ok(1.into())
+                    );
+                }
+            });
+    }
+    assert!(checked, "Callbacks were never exercised");
+    Ok(())
+}
 
 pub fn external_interface_avm1(
     environment: &impl Environment,

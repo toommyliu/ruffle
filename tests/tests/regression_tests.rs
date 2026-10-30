@@ -3,7 +3,9 @@
 //! Trace output can be compared with correct output from the official Flash Player.
 
 use crate::environment::NativeEnvironment;
-use crate::external_interface::tests::{external_interface_avm1, external_interface_avm2};
+use crate::external_interface::tests::{
+    external_interface_avm1, external_interface_avm2, external_interface_callback_result,
+};
 use crate::shared_object::{shared_object_avm1, shared_object_avm2, shared_object_self_ref_avm1};
 use anyhow::Context;
 use clap::Parser;
@@ -111,6 +113,14 @@ fn main() {
     runner.with_additional_test(Trial::test("external_interface_avm2", move || {
         external_interface_avm2(&*env_clone)
     }));
+
+    for vm in ["avm1", "avm2"] {
+        let env_clone = env.clone();
+        runner.with_additional_test(Trial::test(
+            format!("external_interface_callback_result_{vm}"),
+            move || external_interface_callback_result(&*env_clone, vm),
+        ));
+    }
 
     let conclusion = runner.run();
 
