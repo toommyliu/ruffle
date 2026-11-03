@@ -132,6 +132,35 @@ final class ViewController: UIViewController {
         wirePlayerCallbacks()
         loadBundledSwf()
         startMetricsTimer()
+
+        // Re-take first responder after the keyboard goes away so shake events keep reaching us.
+        NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardDidHideNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { _ = self?.becomeFirstResponder() }
+        }
+    }
+
+    // MARK: - Shake to show/hide the floating button
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        _ = becomeFirstResponder()
+    }
+
+    override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+        super.motionEnded(motion, with: event)
+        guard motion == .motionShake else { return }
+        let show = floatingBlurView.alpha < 0.5
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        floatingBlurView.isUserInteractionEnabled = show
+        UIView.animate(withDuration: 0.2) {
+            self.floatingBlurView.alpha = show ? 1 : 0
+        }
     }
 
     deinit {

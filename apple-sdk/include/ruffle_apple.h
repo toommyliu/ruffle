@@ -146,6 +146,19 @@ void ruffle_player_key_enter(RufflePlayerHandle* handle);
 /// Returns `true` if an editable `TextField` (`EditText`) currently has stage focus.
 bool ruffle_player_is_text_focused(RufflePlayerHandle* handle);
 
+/// Returns a newly allocated UTF-8 string with the text of the focused editable `TextField`,
+/// or NULL if none is focused. Free with `ruffle_string_free`. Optional outputs report whether the
+/// field is a password field and the selection range (UTF-16 offsets).
+char* ruffle_player_get_focused_text(
+    RufflePlayerHandle* handle,
+    bool* out_is_password,
+    size_t* out_selection_start,
+    size_t* out_selection_end
+);
+
+/// Clears all text in the focused editable `TextField` (SelectAll + Backspace so AS3 change events fire).
+void ruffle_player_clear_focused_text(RufflePlayerHandle* handle);
+
 /// Calls a callback registered by ActionScript via `ExternalInterface.addCallback(name, fn)`.
 /// `args_json_utf8` should be a JSON array of arguments (e.g. `"[\"arg1\", 123]"` or `"[]"`).
 /// Returns a newly allocated JSON string with the return value; free with `ruffle_string_free`.

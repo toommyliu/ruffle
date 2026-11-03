@@ -313,6 +313,32 @@ public final class RufflePlayer: ObservableObject {
         return ruffle_player_is_text_focused(handle)
     }
 
+    /// Snapshot of the focused editable Flash `TextField`, or `nil` if none is focused.
+    public struct FocusedTextState: Equatable {
+        public let text: String
+        public let isPassword: Bool
+        /// Caret position as a UTF-16 offset into `text`.
+        public let caret: Int
+    }
+
+    public var focusedTextState: FocusedTextState? {
+        guard let handle else { return nil }
+        var isPassword = false
+        var start = 0
+        var end = 0
+        guard let ptr = ruffle_player_get_focused_text(handle, &isPassword, &start, &end) else {
+            return nil
+        }
+        defer { ruffle_string_free(ptr) }
+        return FocusedTextState(text: String(cString: ptr), isPassword: isPassword, caret: end)
+    }
+
+    /// Clears all text in the focused Flash `TextField`.
+    public func clearFocusedText() {
+        guard let handle else { return }
+        ruffle_player_clear_focused_text(handle)
+    }
+
     /// Queries the most recent per-frame CPU/GPU timings and frame counters.
     public var frameTimings: RuffleFrameTimings {
         guard let handle else {

@@ -65,6 +65,48 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
         true
     }
 
+    private lazy var keyboardBar: KeyboardInputAccessoryView = {
+        let bar = KeyboardInputAccessoryView(frame: .zero)
+        bar.onClear = { [weak self] in
+            self?.player?.clearFocusedText()
+            self?.renderIfPossible()
+            self?.refreshKeyboardBar()
+        }
+        bar.onPaste = { [weak self] in
+            guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+            self?.insertText(text)
+        }
+        bar.onSend = { [weak self] in
+            self?.insertText("\n")
+        }
+        bar.onDismiss = { [weak self] in
+            _ = self?.resignFirstResponder()
+        }
+        return bar
+    }()
+
+    override public var inputAccessoryView: UIView? {
+        keyboardBar
+    }
+
+    private func refreshKeyboardBar() {
+        guard isFirstResponder else { return }
+        keyboardBar.update(state: player?.focusedTextState)
+    }
+
+    override public func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result {
+            // This can be invoked from inside Ruffle's keyboard callback while the player lock is held,
+            // so never query the player synchronously here (the lock is not reentrant).
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isFirstResponder else { return }
+                self.keyboardBar.update(state: self.player?.focusedTextState, force: true)
+            }
+        }
+        return result
+    }
+
     public func insertText(_ text: String) {
         guard let player else { return }
         if text == "\n" {
@@ -74,6 +116,7 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
         } else {
             player.insertText(text)
             renderIfPossible()
+            refreshKeyboardBar()
         }
     }
 
@@ -81,6 +124,7 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
         guard let player else { return }
         player.deleteBackward()
         renderIfPossible()
+        refreshKeyboardBar()
     }
 
     // MARK: - Initialization
@@ -309,6 +353,7 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
         lastTimestamp = now
 
         player.tick(dtMillis: dtSeconds * 1000.0)
+        refreshKeyboardBar()
         if player.needsRender {
             player.render()
             fpsSampleRenderCount += 1

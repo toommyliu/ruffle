@@ -1155,6 +1155,86 @@ pub unsafe extern "C" fn ruffle_player_is_text_focused(handle: *mut RufflePlayer
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_get_focused_text(
+    handle: *mut RufflePlayerHandle,
+    out_is_password: *mut bool,
+    out_selection_start: *mut usize,
+    out_selection_end: *mut usize,
+) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &mut *handle };
+        let Ok(mut player) = handle.player.lock() else {
+            return std::ptr::null_mut();
+        };
+        let state = player.mutate_with_update_context(|context| {
+            context
+                .focus_tracker
+                .get_as_edit_text()
+                .filter(|tf| tf.is_editable())
+                .map(|tf| {
+                    let text = tf.text().to_utf8_lossy().into_owned();
+                    let (start, end) = tf
+                        .selection()
+                        .map(|s| (s.start(), s.end()))
+                        .unwrap_or((text.encode_utf16().count(), text.encode_utf16().count()));
+                    (text, tf.is_password(), start, end)
+                })
+        });
+        let Some((text, is_password, start, end)) = state else {
+            return std::ptr::null_mut();
+        };
+        unsafe {
+            if !out_is_password.is_null() {
+                *out_is_password = is_password;
+            }
+            if !out_selection_start.is_null() {
+                *out_selection_start = start;
+            }
+            if !out_selection_end.is_null() {
+                *out_selection_end = end;
+            }
+        }
+        CString::new(text.replace('\0', ""))
+            .map(CString::into_raw)
+            .unwrap_or(std::ptr::null_mut())
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_clear_focused_text(handle: *mut RufflePlayerHandle) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = tokio_runtime().enter();
+        let handle = unsafe { &mut *handle };
+        if let Ok(mut player) = handle.player.lock() {
+            player.handle_event(PlayerEvent::TextControl {
+                code: TextControlCode::SelectAll,
+            });
+            let backspace_key = KeyDescriptor {
+                physical_key: PhysicalKey::Backspace,
+                logical_key: LogicalKey::Named(NamedKey::Backspace),
+                key_location: KeyLocation::Standard,
+            };
+            player.handle_event(PlayerEvent::KeyDown { key: backspace_key });
+            player.handle_event(PlayerEvent::TextControl {
+                code: TextControlCode::Backspace,
+            });
+            player.handle_event(PlayerEvent::KeyUp { key: backspace_key });
+            player.mutate_with_update_context(|context| {
+                *context.needs_render = true;
+            });
+        }
+        handle.drain_tasks();
+    }));
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ruffle_player_call_external_interface(
     handle: *mut RufflePlayerHandle,
     name_utf8: *const c_char,
