@@ -1,0 +1,5 @@
+module RuffleAppleFFI {
+    header "ruffle_apple.h"
+    export *
+}
+

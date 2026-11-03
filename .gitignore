@@ -19,3 +19,15 @@ RECOVER_*.fla
 
 # A developers local Flash Player harness config
 .flash_players.toml
+
+# Local developer tools & indexers
+/.codegraph/
+.tool-versions
+
+# Apple / SwiftPM / Xcode build artifacts and user state
+/apple-sdk/RuffleApple.xcframework/
+**/.build/
+**/.swiftpm/
+**/xcuserdata/
+*.xcuserstate
+**/DerivedData/

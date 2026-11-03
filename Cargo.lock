@@ -4828,6 +4828,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruffle_apple_sdk"
+version = "0.6.0"
+dependencies = [
+ "async-channel",
+ "async-task",
+ "ruffle_core",
+ "ruffle_frontend_utils",
+ "ruffle_render",
+ "ruffle_render_wgpu",
+ "ruffle_video_software",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+ "wgpu",
+]
+
+[[package]]
 name = "ruffle_common"
 version = "0.6.0"
 dependencies = [

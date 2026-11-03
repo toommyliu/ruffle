@@ -1,0 +1,44 @@
+[package]
+name = "ruffle_apple_sdk"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lib]
+name = "ruffle_apple_sdk"
+crate-type = ["staticlib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ruffle_core = { path = "../core", default-features = false, features = [
+    "audio",
+    "mp3",
+    "aac",
+    "nellymoser",
+    "lzma",
+    "jpegxr",
+    "default_font",
+    "default_compatibility_rules",
+] }
+ruffle_render = { path = "../render", default-features = false }
+ruffle_render_wgpu = { path = "../render/wgpu", default-features = false }
+ruffle_frontend_utils = { path = "../frontend-utils", default-features = false, features = [
+    "cpal",
+    "fs",
+    "navigator",
+    "rustls-tls",
+] }
+ruffle_video_software = { path = "../video/software" }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
+async-channel = { workspace = true }
+async-task = "4.7.1"
+url = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+wgpu = { workspace = true }
+

@@ -4,6 +4,7 @@ members = [
     "core/macros",
     "core/build_playerglobal",
     "desktop",
+    "apple-sdk",
     "swf",
     "flv",
     "web",
