@@ -41,6 +41,7 @@ members = [
     "tools/stub-report",
 ]
 default-members = ["desktop"]
+exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
@@ -116,6 +117,12 @@ tempfile = "3.27.0"
 tracing-wasm = "0.2.1"
 rascal = "0.3.5"
 jpegxr = { git = "https://github.com/ruffle-rs/jpegxr", rev = "86cc1749d493288f53d7290ac3eb7082c475b5d9" }
+
+[patch.crates-io]
+wgpu-core = { path = "vendor/wgpu-core" }
+wgpu-hal = { path = "vendor/wgpu-hal" }
+naga = { path = "vendor/naga" }
+wgpu-types = { path = "vendor/wgpu-types" }
 
 [workspace.lints.rust]
 # Clippy nightly often adds new/buggy lints that we want to ignore.

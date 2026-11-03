@@ -34,6 +34,9 @@ pub struct Descriptors {
     pub filters: Filters,
     pub complex_direct_modes: wgpu::Buffer,
     pub complex_direct_mode_stride: u32,
+    /// Set when complex blends read the pixels below in the shader
+    /// (`Features::FRAMEBUFFER_FETCH`) rather than from a copy of the target.
+    pub fetch_blend: Option<wgpu::BindGroup>,
     pub scratch: Mutex<ScratchBuffer>,
 }
 
@@ -72,6 +75,23 @@ impl Descriptors {
             contents: bytemuck::cast_slice(&modes),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let fetch_blend = device
+            .features()
+            .contains(wgpu::Features::FRAMEBUFFER_FETCH)
+            .then(|| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: create_debug_label!("Framebuffer fetch blend binds").as_deref(),
+                    layout: &bind_layouts.fetch_blend,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &complex_direct_modes,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(16),
+                        }),
+                    }],
+                })
+            });
 
         Self {
             wgpu_instance: instance,
@@ -92,6 +112,7 @@ impl Descriptors {
             filters,
             complex_direct_modes,
             complex_direct_mode_stride,
+            fetch_blend,
             scratch,
         }
     }

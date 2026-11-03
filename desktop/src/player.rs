@@ -271,9 +271,22 @@ impl ActivePlayer {
             GameModePreference::Off => false,
         };
 
-        let renderer = WgpuRenderBackend::new(descriptors, movie_view)
+        #[cfg(feature = "stats")]
+        if std::env::var_os("RUFFLE_KEEP_SAMPLES").is_some() {
+            ruffle_render_wgpu::stats::KEEP_SAMPLES
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg_attr(not(feature = "stats"), expect(unused_mut))]
+        let mut renderer = WgpuRenderBackend::new(descriptors, movie_view)
             .map_err(|e| anyhow!(e.to_string()))
             .expect("Couldn't create wgpu rendering backend");
+        #[cfg(feature = "stats")]
+        if let Some(samples) = std::env::var("RUFFLE_MAX_SAMPLES")
+            .ok()
+            .and_then(|samples| samples.parse().ok())
+        {
+            renderer.set_max_sample_count(samples);
+        }
         RENDER_INFO.with(|i| *i.borrow_mut() = Some(renderer.debug_info().to_string()));
 
         if opt.player.dummy_external_interface.unwrap_or_default() {

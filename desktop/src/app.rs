@@ -54,8 +54,13 @@ impl MainWindow {
             if !self.minimized && !self.occluded {
                 let mut player = self.player.get();
                 if let Some(ref mut player) = player {
+                    if !player.is_playing() {
+                        self.time = Instant::now();
+                    }
                     // Even if the movie is paused, user interaction with debug tools can change the render output
                     player.render();
+                    #[cfg(feature = "stats")]
+                    crate::stats::render();
                 }
 
                 self.gui.render(player);
@@ -392,18 +397,29 @@ impl MainWindow {
             let dt = FloatDuration::from_std(new_time.duration_since(self.time));
             if dt.as_millis() > 0.0 {
                 self.time = new_time;
-                self.next_frame_time = self.player.get().map(|mut player| {
+                self.next_frame_time = self.player.get().and_then(|mut player| {
                     player.tick(dt);
-                    new_time + player.time_til_next_frame()
+                    player
+                        .is_playing()
+                        .then(|| new_time + player.time_til_next_frame())
                 });
-                self.check_redraw();
             }
         }
+
+        self.check_redraw();
     }
 
     fn check_redraw(&self) {
+        if self.minimized || self.occluded {
+            return;
+        }
         let player = self.player.get();
-        if player.map(|p| p.needs_render()).unwrap_or_default() || self.gui.needs_render() {
+        if player.map(|p| p.needs_render()).unwrap_or_default()
+            || self
+                .gui
+                .next_repaint_time()
+                .is_some_and(|deadline| deadline <= Instant::now())
+        {
             self.gui.window().request_redraw();
         }
     }
@@ -501,6 +517,8 @@ impl ApplicationHandler<RuffleEvent> for App {
             let window = event_loop
                 .create_window(window_attributes)
                 .expect("Window should be created");
+            #[cfg(feature = "stats")]
+            crate::stats::configure_window(&window);
             let max_window_size = get_screen_size(&window);
             window.set_max_inner_size(Some(max_window_size));
             let window = Arc::new(window);
@@ -696,15 +714,25 @@ impl ApplicationHandler<RuffleEvent> for App {
 
         if let Some(main_window) = &mut self.main_window {
             main_window.about_to_wait(self.gilrs.as_mut());
+            #[cfg(feature = "stats")]
+            crate::stats::sample(
+                main_window.player.get().as_deref(),
+                main_window.gui.window(),
+                main_window.minimized || main_window.occluded,
+            );
 
-            // The event loop is finished; let's find out how long we need to wait for.
-            // We don't need to worry about earlier update requests, as it's the
-            // only place where we're setting control flow, and events cancel wait.
-            // Note: the control flow might be set to `ControlFlow::WaitUntil` with a
-            // timestamp in the past! Take that into consideration when changing this code.
-            if let Some(next_frame_time) = main_window.next_frame_time {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_time));
-            }
+            let next_repaint_time = if main_window.minimized || main_window.occluded {
+                None
+            } else {
+                main_window.gui.next_repaint_time()
+            };
+            let next_wakeup = main_window
+                .next_frame_time
+                .into_iter()
+                .chain(next_repaint_time)
+                .min();
+            event_loop
+                .set_control_flow(next_wakeup.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
         }
     }
 

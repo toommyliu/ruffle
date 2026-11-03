@@ -37,6 +37,9 @@ pub enum RuffleEvent {
     /// The user requested to exit Ruffle.
     ExitRequested,
 
+    /// A socket has data for the player, which takes it in when the event loop next wakes.
+    SocketData,
+
     /// The user selected an item in the right-click context menu.
     ContextMenuItemClicked(usize),
 

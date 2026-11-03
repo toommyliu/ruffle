@@ -61,15 +61,23 @@ impl Shaders {
                 ),
             });
         let complex_direct = {
-            let variant = |name, source| {
-                make_shape_variant(
-                    device,
-                    name,
-                    source,
-                    max_transforms,
-                    "",
-                    include_str!("../shaders/complex_direct.wgsl"),
+            let (prelude, entry_point) = if device
+                .features()
+                .contains(wgpu::Features::FRAMEBUFFER_FETCH)
+            {
+                (
+                    "enable wgpu_framebuffer_fetch;",
+                    include_str!("../shaders/complex_fetch.wgsl"),
                 )
+            } else {
+                ("", include_str!("../shaders/complex_copy.wgsl"))
+            };
+            let fragment = format!(
+                "{}\n{entry_point}",
+                include_str!("../shaders/complex_direct.wgsl")
+            );
+            let variant = |name, source| {
+                make_shape_variant(device, name, source, max_transforms, prelude, &fragment)
             };
             MultiplyShaders {
                 color: variant("color.wgsl", include_str!("../shaders/color.wgsl")),

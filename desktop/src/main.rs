@@ -15,6 +15,8 @@ mod gui;
 mod log;
 mod player;
 mod preferences;
+#[cfg(feature = "stats")]
+mod stats;
 #[cfg(feature = "tracy")]
 mod tracy;
 mod util;

@@ -1,9 +1,9 @@
 // Appended to a shape shader whose `main_fragment` was renamed to
 // `shape_color`, to draw a single shape with a complex blend mode directly
-// instead of through a layer. What's below comes from a copy of the target
-// (`parent_texture`); the composite matches blend/*.wgsl.
+// instead of through a layer, followed by an entry point that reads what's
+// below: `complex_copy.wgsl` or `complex_fetch.wgsl`. The composite matches
+// blend/*.wgsl.
 
-@group(3) @binding(0) var parent_texture: texture_2d<f32>;
 // x: the blend mode, numbered as in `DirectBlend::complex_direct_mode`.
 @group(3) @binding(1) var<uniform> blend: vec4<u32>;
 
@@ -22,13 +22,7 @@ fn blend_func(src: vec3<f32>, dst: vec3<f32>) -> vec3<f32> {
     }
 }
 
-@fragment
-fn main_fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let src = shape_color(in);
-    if (src.a <= 0.0) {
-        discard;
-    }
-    let dst = textureLoad(parent_texture, vec2<i32>(in.position.xy), 0);
+fn composite(src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
     if (dst.a <= 0.0) {
         return src;
     }

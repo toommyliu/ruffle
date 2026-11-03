@@ -11,6 +11,7 @@ pub struct BindLayouts {
     pub blend: wgpu::BindGroupLayout,
     pub alpha_mask: wgpu::BindGroupLayout,
     pub parent_copy: wgpu::BindGroupLayout,
+    pub fetch_blend: wgpu::BindGroupLayout,
 }
 
 impl BindLayouts {
@@ -183,6 +184,16 @@ impl BindLayouts {
             label: alpha_mask_bind_layout_label.as_deref(),
         });
 
+        let blend_mode_entry = wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: wgpu::BufferSize::new(16),
+            },
+            count: None,
+        };
         let parent_copy = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -195,18 +206,13 @@ impl BindLayouts {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(16),
-                    },
-                    count: None,
-                },
+                blend_mode_entry,
             ],
             label: create_debug_label!("Parent copy bind group").as_deref(),
+        });
+        let fetch_blend = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[blend_mode_entry],
+            label: create_debug_label!("Framebuffer fetch blend bind group").as_deref(),
         });
 
         Self {
@@ -217,6 +223,7 @@ impl BindLayouts {
             blend,
             alpha_mask,
             parent_copy,
+            fetch_blend,
         }
     }
 }

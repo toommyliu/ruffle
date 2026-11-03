@@ -61,8 +61,11 @@ impl GuiController {
         initial_movie_url: Option<Url>,
         no_gui: bool,
     ) -> anyhow::Result<Self> {
-        let (instance, backend) =
-            select_wgpu_backend(preferences.graphics_backends().into(), &window)?;
+        let (instance, backend) = select_wgpu_backend(
+            preferences.graphics_backends().into(),
+            preferences.graphics_power_preference().into(),
+            &window,
+        )?;
         let surface = instance.create_surface(window.clone())?;
         let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
             backend,
@@ -263,6 +266,7 @@ impl GuiController {
     pub fn close_movie(&mut self, player: &mut PlayerController) {
         player.destroy();
         self.gui.on_player_destroyed();
+        self.window.request_redraw();
     }
 
     pub fn create_movie(
@@ -366,6 +370,7 @@ impl GuiController {
 
         let raw_input = self.egui_winit.take_egui_input(&self.window);
         let show_menu = self.window.fullscreen().is_none() && !self.no_gui;
+        self.last_update = Instant::now();
         let mut full_output = self.egui_winit.egui_ctx().run_ui(raw_input, |ui| {
             self.gui.update(
                 self.egui_winit.egui_ctx(),
@@ -489,6 +494,8 @@ impl GuiController {
 
         self.window.pre_present_notify();
         self.descriptors.queue.present(surface_texture);
+        #[cfg(feature = "stats")]
+        crate::stats::present();
         #[cfg(feature = "tracy")]
         tracing_tracy::client::frame_mark();
         #[cfg(feature = "tracy_images")]
@@ -507,8 +514,8 @@ impl GuiController {
         self.gui.is_context_menu_visible()
     }
 
-    pub fn needs_render(&self) -> bool {
-        Instant::now().duration_since(self.last_update) >= self.repaint_after
+    pub fn next_repaint_time(&self) -> Option<Instant> {
+        self.last_update.checked_add(self.repaint_after)
     }
 
     pub fn show_open_dialog(&mut self) {
@@ -517,6 +524,7 @@ impl GuiController {
 
     pub fn open_dialog(&mut self, dialog_event: DialogDescriptor) {
         self.gui.dialogs.open_dialog(dialog_event);
+        self.window.request_redraw();
     }
 
     pub fn set_ime_allowed(&self, allowed: bool) {
@@ -550,15 +558,21 @@ impl GuiController {
                 ExportBundleDialogConfiguration::new(content_descriptor, player_options),
             )));
         self.gui.on_player_destroyed();
+        self.window.request_redraw();
     }
 }
 
 fn select_wgpu_backend(
     preferred_backends: wgpu::Backends,
+    power_preference: wgpu::PowerPreference,
     window: &Arc<Window>,
 ) -> anyhow::Result<(wgpu::Instance, wgpu::Backends)> {
     for backend in preferred_backends.iter() {
         if let Some(instance) = try_wgpu_backend(backend, window.clone()) {
+            if backend != preferred_backends && avoid_backend(&instance, backend, power_preference)
+            {
+                continue;
+            }
             tracing::info!(
                 "Using preferred backend {}",
                 format_list(&get_backend_names(backend), "and")
@@ -598,6 +612,32 @@ fn try_wgpu_backend(backend: wgpu::Backends, window: Arc<Window>) -> Option<wgpu
     } else {
         Some(instance)
     }
+}
+
+fn avoid_backend(
+    instance: &wgpu::Instance,
+    backend: wgpu::Backends,
+    power_preference: wgpu::PowerPreference,
+) -> bool {
+    if !cfg!(windows) || backend != wgpu::Backends::VULKAN {
+        return false;
+    }
+    let Ok(adapter) =
+        futures::executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+    else {
+        return false;
+    };
+    let info = adapter.get_info();
+    if info.vendor != 0x8086 {
+        return false;
+    }
+    tracing::warn!("Not using Vulkan on {}: its driver can crash", info.name);
+    true
 }
 
 // Load fallback fonts

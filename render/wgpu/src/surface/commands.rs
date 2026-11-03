@@ -116,12 +116,13 @@ impl<'encoder> CommandRenderer<'encoder> {
         if let DirectBlend::Complex(mode) = blend {
             let offset = DirectBlend::complex_direct_mode(mode)
                 * self.descriptors.complex_direct_mode_stride;
-            render_pass.set_bind_group(
-                3,
-                self.parent_copy
+            let binds = match &self.descriptors.fetch_blend {
+                Some(binds) => binds,
+                None => self
+                    .parent_copy
                     .expect("A complex blend draw must follow a parent copy"),
-                &[offset],
-            );
+            };
+            render_pass.set_bind_group(3, binds, &[offset]);
         }
     }
 
@@ -1619,7 +1620,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
         };
 
         let footprint = Footprint {
-            reads_below: matches!(blend, DirectBlend::Complex(_)),
+            reads_below: self.reads_below(blend),
             ..self.quad_footprint(&matrix)
         };
         self.add_to_current_with_vertices(
@@ -1642,7 +1643,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
     fn add_shape(&mut self, shape: ShapeHandle, transform: Transform, blend: DirectBlend) {
         let footprint = Footprint {
             region: self.footprint(&transform.matrix, as_mesh(&shape).bounds),
-            reads_below: matches!(blend, DirectBlend::Complex(_)),
+            reads_below: self.reads_below(blend),
         };
         self.add_to_current(
             transform.matrix,
@@ -1689,7 +1690,9 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             if region.is_empty() {
                 return true;
             }
-            if let Some(block) = &mut self.masked {
+            if self.reads_below(blend)
+                && let Some(block) = &mut self.masked
+            {
                 block.items.push(MaskedItem::Copy(region));
                 block.reads_below = true;
             }
@@ -1906,7 +1909,7 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             PosUvVertex::new(1.0, 1.0, u1, v1, 1.0),
             PosUvVertex::new(0.0, 1.0, u0, v1, 1.0),
         ];
-        let reads_below = matches!(blend, DirectBlend::Complex(_));
+        let reads_below = self.reads_below(blend);
         if let (true, Some(block)) = (reads_below, &mut self.masked) {
             block.items.push(MaskedItem::Copy(footprint));
             block.reads_below = true;
@@ -1928,6 +1931,10 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                 blend_mode: blend,
             },
         );
+    }
+
+    fn reads_below(&self, blend: DirectBlend) -> bool {
+        matches!(blend, DirectBlend::Complex(_)) && self.descriptors.fetch_blend.is_none()
     }
 
     fn parent_copy_region(&self, command: &Command) -> Option<PixelRegion> {
@@ -2076,7 +2083,7 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
                             ],
                             label: None,
                         });
-                let reads_below = matches!(blend_mode, DirectBlend::Complex(_));
+                let reads_below = self.reads_below(blend_mode);
                 if reads_below && footprint.is_empty() {
                     return;
                 }
