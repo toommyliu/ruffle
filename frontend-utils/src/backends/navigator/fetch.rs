@@ -33,22 +33,25 @@ impl SuccessResponse for Response {
         self.url = url;
     }
 
-    #[expect(clippy::await_holding_lock)]
     fn body(self: Box<Self>) -> OwnedFuture<Vec<u8>, Error> {
         match self.response_body {
             ResponseBody::File(file) => {
                 Box::pin(async move { file.map_err(|e| Error::FetchError(e.to_string())) })
             }
             ResponseBody::Network(response) => Box::pin(async move {
-                Ok(response
+                let resp = response
                     .lock()
                     .expect("working lock during fetch body read")
                     .take()
-                    .expect("Body cannot already be consumed")
-                    .bytes()
-                    .await
-                    .map_err(|e| Error::FetchError(e.to_string()))?
-                    .to_vec())
+                    .expect("Body cannot already be consumed");
+                crate::backends::navigator::spawn_tokio(async move {
+                    resp.bytes()
+                        .await
+                        .map(|b| b.to_vec())
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(Error::FetchError)
             }),
         }
     }
@@ -65,7 +68,6 @@ impl SuccessResponse for Response {
         self.redirected
     }
 
-    #[expect(clippy::await_holding_lock)]
     fn next_chunk(&mut self) -> OwnedFuture<Option<Vec<u8>>, Error> {
         match &mut self.response_body {
             ResponseBody::File(file) => {
@@ -85,26 +87,56 @@ impl SuccessResponse for Response {
             ResponseBody::Network(response) => {
                 let response = response.clone();
                 Box::pin(async move {
-                    let lock = response.try_lock();
-                    if matches!(lock, Err(std::sync::TryLockError::WouldBlock)) {
-                        return Err(Error::FetchError(
-                            "Concurrent read operations on the same stream are not supported."
-                                .to_string(),
-                        ));
-                    }
+                    crate::backends::navigator::spawn_tokio(async move {
+                        let mut resp = {
+                            let mut lock = match response.try_lock() {
+                                Ok(lock) => lock,
+                                Err(std::sync::TryLockError::WouldBlock) => {
+                                    return Err(
+                                        "Concurrent read operations on the same stream are not supported."
+                                            .to_string(),
+                                    );
+                                }
+                                Err(_) => panic!("desktop network lock"),
+                            };
+                            match lock.take() {
+                                Some(resp) => resp,
+                                None => {
+                                    return Err(
+                                        "Concurrent read operations on the same stream are not supported."
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                        };
 
-                    let result = lock
-                        .expect("desktop network lock")
-                        .as_mut()
-                        .expect("Body cannot already be consumed")
-                        .chunk()
-                        .await;
+                        let mut buf = Vec::new();
+                        let result = loop {
+                            match resp.chunk().await {
+                                Ok(Some(bytes)) => {
+                                    buf.extend_from_slice(&bytes);
+                                    if buf.len() >= 1024 * 1024 {
+                                        break Ok(Some(buf));
+                                    }
+                                }
+                                Ok(None) => {
+                                    if buf.is_empty() {
+                                        break Ok(None);
+                                    } else {
+                                        break Ok(Some(buf));
+                                    }
+                                }
+                                Err(e) => break Err(e.to_string()),
+                            }
+                        };
 
-                    match result {
-                        Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
-                        Ok(None) => Ok(None),
-                        Err(e) => Err(Error::FetchError(e.to_string())),
-                    }
+                        if let Ok(mut lock) = response.lock() {
+                            *lock = Some(resp);
+                        }
+                        result
+                    })
+                    .await
+                    .map_err(Error::FetchError)
                 })
             }
         }

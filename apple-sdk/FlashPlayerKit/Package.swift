@@ -1,4 +1,5 @@
 // swift-tools-version: 5.9
+// FlashPlayerKit — Native iOS (arm64 + simulator) and macOS (arm64) Swift SDK for Ruffle
 import PackageDescription
 
 let package = Package(

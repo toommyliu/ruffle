@@ -53,7 +53,7 @@ static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 fn tokio_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(4)
             .enable_all()
             .build()
             .expect("Failed to initialize Tokio runtime for Ruffle Apple SDK")
@@ -459,8 +459,6 @@ pub struct RufflePlayerHandle {
     keyboard_reg: Arc<Mutex<VirtualKeyboardCallbackRegistration>>,
     navigate_reg: Arc<Mutex<NavigateUrlCallbackRegistration>>,
     spoof_url: Arc<Mutex<Option<Url>>>,
-    scale_factor: f64,
-    single_sample: Option<bool>,
     last_tick_ms: f64,
     last_render_ms: f64,
 }
@@ -470,26 +468,6 @@ impl RufflePlayerHandle {
         let _guard = tokio_runtime().enter();
         while let Ok(runnable) = self.task_receiver.try_recv() {
             runnable.run();
-        }
-    }
-
-    fn sync_sample_count(player: &mut Player, scale_factor: f64, last_single: &mut Option<bool>) {
-        let sample_count = player.quality().sample_count();
-        let single = sample_count > 1 && f64::from(sample_count).sqrt() <= scale_factor;
-        if *last_single != Some(single) {
-            *last_single = Some(single);
-            let max_samples = if single { 1 } else { u32::MAX };
-            if let Some(renderer) = <dyn std::any::Any>::downcast_mut::<
-                WgpuRenderBackend<ruffle_render_wgpu::target::SwapChainTarget>,
-            >(player.renderer_mut())
-            {
-                renderer.set_max_sample_count(max_samples);
-            } else if let Some(renderer) = <dyn std::any::Any>::downcast_mut::<
-                WgpuRenderBackend<ruffle_render_wgpu::target::TextureTarget>,
-            >(player.renderer_mut())
-            {
-                renderer.set_max_sample_count(max_samples);
-            }
         }
     }
 }
@@ -513,12 +491,9 @@ pub unsafe extern "C" fn ruffle_player_create(
             1.0
         };
 
-        let initial_quality = StageQuality::High;
-        let initial_single = f64::from(initial_quality.sample_count()).sqrt() <= safe_scale;
-
         let renderer: Box<dyn RenderBackend> = if !metal_layer_ptr.is_null() {
             let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer_ptr);
-            let mut backend = unsafe {
+            let backend = unsafe {
                 WgpuRenderBackend::for_window_unsafe(
                     target,
                     (safe_width, safe_height),
@@ -528,20 +503,14 @@ pub unsafe extern "C" fn ruffle_player_create(
                 )
             }
             .expect("Failed to create Metal WgpuRenderBackend for CAMetalLayer");
-            if initial_single {
-                backend.set_max_sample_count(1);
-            }
             Box::new(backend)
         } else {
-            let mut backend = WgpuRenderBackend::for_offscreen(
+            let backend = WgpuRenderBackend::for_offscreen(
                 (safe_width, safe_height),
                 wgpu::Backends::METAL,
                 wgpu::PowerPreference::HighPerformance,
             )
             .expect("Failed to create offscreen Metal WgpuRenderBackend");
-            if initial_single {
-                backend.set_max_sample_count(1);
-            }
             Box::new(backend)
         };
 
@@ -623,8 +592,6 @@ pub unsafe extern "C" fn ruffle_player_create(
             keyboard_reg,
             navigate_reg,
             spoof_url,
-            scale_factor: safe_scale,
-            single_sample: Some(initial_single),
             last_tick_ms: 0.0,
             last_render_ms: 0.0,
         }))
@@ -789,13 +756,7 @@ pub unsafe extern "C" fn ruffle_player_set_viewport_dimensions(
         } else {
             1.0
         };
-        handle.scale_factor = safe_scale;
         if let Ok(mut player) = handle.player.lock() {
-            RufflePlayerHandle::sync_sample_count(
-                &mut player,
-                handle.scale_factor,
-                &mut handle.single_sample,
-            );
             player.set_viewport_dimensions(ViewportDimensions {
                 width: width.max(1),
                 height: height.max(1),
@@ -817,11 +778,6 @@ pub unsafe extern "C" fn ruffle_player_tick(handle: *mut RufflePlayerHandle, dt_
         handle.drain_tasks();
         if let Ok(mut player) = handle.player.lock() {
             player.tick(FloatDuration::from_millis(dt_millis.max(0.0)));
-            RufflePlayerHandle::sync_sample_count(
-                &mut player,
-                handle.scale_factor,
-                &mut handle.single_sample,
-            );
         }
         handle.drain_tasks();
         handle.last_tick_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1319,11 +1275,7 @@ pub unsafe extern "C" fn ruffle_player_set_quality(handle: *mut RufflePlayerHand
         };
         if let Ok(mut player) = handle.player.lock() {
             player.set_quality(stage_quality);
-            RufflePlayerHandle::sync_sample_count(
-                &mut player,
-                handle.scale_factor,
-                &mut handle.single_sample,
-            );
+            player.release_memory();
         }
     }));
 }

@@ -371,6 +371,7 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
                     return;
                 }
                 Ok(stream) => {
+                    let _ = stream.set_nodelay(true);
                     let action = SocketAction::Connect(handle, ConnectionState::Connected);
                     if !send_action(&sender, action).await {
                         return;

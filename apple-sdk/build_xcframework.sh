@@ -105,4 +105,5 @@ fi
 rm -rf "$OUTPUT_XCFRAMEWORK"
 echo "Creating $OUTPUT_XCFRAMEWORK..."
 xcodebuild -create-xcframework "${XCFRAMEWORK_ARGS[@]}" -output "$OUTPUT_XCFRAMEWORK"
+touch "$SCRIPT_DIR/FlashPlayerKit/Package.swift"
 echo "Successfully created $OUTPUT_XCFRAMEWORK"
