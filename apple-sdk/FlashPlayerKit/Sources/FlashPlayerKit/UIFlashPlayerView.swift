@@ -19,11 +19,32 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
     /// The underlying `RufflePlayer` instance driving this view.
     public private(set) var player: RufflePlayer?
 
+    /// Multiplier applied to the screen's native scale factor (`0.5` to `1.0`).
+    /// Lowering this reduces drawable resolution on high-DPI Retina screens to save GPU bandwidth.
+    public var renderScale: CGFloat = 1.0 {
+        didSet {
+            let clamped = max(0.25, min(1.0, renderScale))
+            if renderScale != clamped {
+                renderScale = clamped
+                return
+            }
+            syncDrawableSizeIfNeeded()
+        }
+    }
+
+    /// Rolling display render frames per second (updated once per second).
+    public private(set) var currentRenderFPS: Double = 0.0
+    /// Rolling SWF logical frames per second (updated once per second).
+    public private(set) var currentSwfFPS: Double = 0.0
+
     private var displayLink: CADisplayLink?
     private var lastTimestamp: CFTimeInterval?
     private var lastDrawableSize: CGSize = .zero
     private var lastScaleFactor: CGFloat = 0.0
     private var isAppActive: Bool = true
+    private var fpsSampleStartTimestamp: CFTimeInterval = 0
+    private var fpsSampleRenderCount: Int = 0
+    private var fpsSampleStartSwfFrames: UInt64 = 0
 
     // MARK: - UITextInputTraits & UIKeyInput
 
@@ -85,7 +106,8 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
     }
 
     private var effectiveScaleFactor: CGFloat {
-        window?.screen.scale ?? UIScreen.main.scale
+        let screenScale = window?.screen.scale ?? UIScreen.main.scale
+        return max(1.0, screenScale * renderScale)
     }
 
     private var canRender: Bool {
@@ -163,6 +185,16 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+        center.addObserver(
+            self,
+            selector: #selector(appDidReceiveMemoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil
+        )
+    }
+
+    @objc private func appDidReceiveMemoryWarning() {
+        player?.releaseMemory()
     }
 
     @objc private func appWillResignActive() {
@@ -279,6 +311,25 @@ public final class UIFlashPlayerView: UIView, UIKeyInput, UITextInputTraits {
         player.tick(dtMillis: dtSeconds * 1000.0)
         if player.needsRender {
             player.render()
+            fpsSampleRenderCount += 1
+        }
+
+        if fpsSampleStartTimestamp == 0 {
+            fpsSampleStartTimestamp = now
+            fpsSampleStartSwfFrames = player.frameTimings.framesRun
+        } else {
+            let elapsed = now - fpsSampleStartTimestamp
+            if elapsed >= 0.5 {
+                let timings = player.frameTimings
+                let swfDelta = timings.framesRun >= fpsSampleStartSwfFrames
+                    ? (timings.framesRun - fpsSampleStartSwfFrames)
+                    : 0
+                currentRenderFPS = Double(fpsSampleRenderCount) / elapsed
+                currentSwfFPS = Double(swfDelta) / elapsed
+                fpsSampleStartTimestamp = now
+                fpsSampleRenderCount = 0
+                fpsSampleStartSwfFrames = timings.framesRun
+            }
         }
     }
 

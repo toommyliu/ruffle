@@ -158,6 +158,31 @@ char* ruffle_player_call_external_interface(
 /// Frees a C string returned by `ruffle_player_call_external_interface`.
 void ruffle_string_free(char* ptr);
 
+/// Queries the most recent per-frame CPU/GPU timings and frame counters from the player.
+/// Any output pointer may be NULL if not needed.
+void ruffle_player_get_frame_timings(
+    const RufflePlayerHandle* handle,
+    double* out_tick_ms,
+    double* out_render_ms,
+    uint64_t* out_frames_run,
+    double* out_swf_fps
+);
+
+/// Gets the current stage quality (`0 = Low`, `1 = Medium`, `2 = High`).
+uint32_t ruffle_player_get_quality(RufflePlayerHandle* handle);
+
+/// Sets the stage quality (`0 = Low`, `1 = Medium`, `2 = High`).
+void ruffle_player_set_quality(RufflePlayerHandle* handle, uint32_t quality);
+
+/// Returns `true` if Smooth Motion (sub-frame motion interpolation) is enabled.
+bool ruffle_player_is_interpolating(const RufflePlayerHandle* handle);
+
+/// Enables or disables Smooth Motion (sub-frame motion interpolation between SWF ticks).
+void ruffle_player_set_interpolating(RufflePlayerHandle* handle, bool interpolating);
+
+/// Runs garbage collection and releases unused bitmap caches and pooled GPU buffers.
+void ruffle_player_release_memory(RufflePlayerHandle* handle);
+
 /// Flushes shared objects and destroys the `RufflePlayerHandle`.
 void ruffle_player_destroy(RufflePlayerHandle* handle);
 

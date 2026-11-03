@@ -45,7 +45,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::{ParseError, Url};
 
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -459,6 +459,10 @@ pub struct RufflePlayerHandle {
     keyboard_reg: Arc<Mutex<VirtualKeyboardCallbackRegistration>>,
     navigate_reg: Arc<Mutex<NavigateUrlCallbackRegistration>>,
     spoof_url: Arc<Mutex<Option<Url>>>,
+    scale_factor: f64,
+    single_sample: Option<bool>,
+    last_tick_ms: f64,
+    last_render_ms: f64,
 }
 
 impl RufflePlayerHandle {
@@ -466,6 +470,26 @@ impl RufflePlayerHandle {
         let _guard = tokio_runtime().enter();
         while let Ok(runnable) = self.task_receiver.try_recv() {
             runnable.run();
+        }
+    }
+
+    fn sync_sample_count(player: &mut Player, scale_factor: f64, last_single: &mut Option<bool>) {
+        let sample_count = player.quality().sample_count();
+        let single = sample_count > 1 && f64::from(sample_count).sqrt() <= scale_factor;
+        if *last_single != Some(single) {
+            *last_single = Some(single);
+            let max_samples = if single { 1 } else { u32::MAX };
+            if let Some(renderer) = <dyn std::any::Any>::downcast_mut::<
+                WgpuRenderBackend<ruffle_render_wgpu::target::SwapChainTarget>,
+            >(player.renderer_mut())
+            {
+                renderer.set_max_sample_count(max_samples);
+            } else if let Some(renderer) = <dyn std::any::Any>::downcast_mut::<
+                WgpuRenderBackend<ruffle_render_wgpu::target::TextureTarget>,
+            >(player.renderer_mut())
+            {
+                renderer.set_max_sample_count(max_samples);
+            }
         }
     }
 }
@@ -489,9 +513,12 @@ pub unsafe extern "C" fn ruffle_player_create(
             1.0
         };
 
+        let initial_quality = StageQuality::High;
+        let initial_single = f64::from(initial_quality.sample_count()).sqrt() <= safe_scale;
+
         let renderer: Box<dyn RenderBackend> = if !metal_layer_ptr.is_null() {
             let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer_ptr);
-            let backend = unsafe {
+            let mut backend = unsafe {
                 WgpuRenderBackend::for_window_unsafe(
                     target,
                     (safe_width, safe_height),
@@ -501,14 +528,20 @@ pub unsafe extern "C" fn ruffle_player_create(
                 )
             }
             .expect("Failed to create Metal WgpuRenderBackend for CAMetalLayer");
+            if initial_single {
+                backend.set_max_sample_count(1);
+            }
             Box::new(backend)
         } else {
-            let backend = WgpuRenderBackend::for_offscreen(
+            let mut backend = WgpuRenderBackend::for_offscreen(
                 (safe_width, safe_height),
                 wgpu::Backends::METAL,
                 wgpu::PowerPreference::HighPerformance,
             )
             .expect("Failed to create offscreen Metal WgpuRenderBackend");
+            if initial_single {
+                backend.set_max_sample_count(1);
+            }
             Box::new(backend)
         };
 
@@ -590,6 +623,10 @@ pub unsafe extern "C" fn ruffle_player_create(
             keyboard_reg,
             navigate_reg,
             spoof_url,
+            scale_factor: safe_scale,
+            single_sample: Some(initial_single),
+            last_tick_ms: 0.0,
+            last_render_ms: 0.0,
         }))
     }));
 
@@ -747,15 +784,22 @@ pub unsafe extern "C" fn ruffle_player_set_viewport_dimensions(
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &mut *handle };
+        let safe_scale = if scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
+        handle.scale_factor = safe_scale;
         if let Ok(mut player) = handle.player.lock() {
+            RufflePlayerHandle::sync_sample_count(
+                &mut player,
+                handle.scale_factor,
+                &mut handle.single_sample,
+            );
             player.set_viewport_dimensions(ViewportDimensions {
                 width: width.max(1),
                 height: height.max(1),
-                scale_factor: if scale_factor > 0.0 {
-                    scale_factor
-                } else {
-                    1.0
-                },
+                scale_factor: safe_scale,
             });
         }
     }));
@@ -769,11 +813,18 @@ pub unsafe extern "C" fn ruffle_player_tick(handle: *mut RufflePlayerHandle, dt_
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let _guard = tokio_runtime().enter();
         let handle = unsafe { &mut *handle };
+        let start = Instant::now();
         handle.drain_tasks();
         if let Ok(mut player) = handle.player.lock() {
             player.tick(FloatDuration::from_millis(dt_millis.max(0.0)));
+            RufflePlayerHandle::sync_sample_count(
+                &mut player,
+                handle.scale_factor,
+                &mut handle.single_sample,
+            );
         }
         handle.drain_tasks();
+        handle.last_tick_ms = start.elapsed().as_secs_f64() * 1000.0;
     }));
 }
 
@@ -800,9 +851,11 @@ pub unsafe extern "C" fn ruffle_player_render(handle: *mut RufflePlayerHandle) {
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &mut *handle };
+        let start = Instant::now();
         if let Ok(mut player) = handle.player.lock() {
             player.render();
         }
+        handle.last_render_ms = start.elapsed().as_secs_f64() * 1000.0;
     }));
 }
 
@@ -1194,6 +1247,132 @@ pub unsafe extern "C" fn ruffle_string_free(ptr: *mut c_char) {
             let _ = CString::from_raw(ptr);
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_get_frame_timings(
+    handle: *const RufflePlayerHandle,
+    out_tick_ms: *mut f64,
+    out_render_ms: *mut f64,
+    out_frames_run: *mut u64,
+    out_swf_fps: *mut f64,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &*handle };
+        unsafe {
+            if !out_tick_ms.is_null() {
+                *out_tick_ms = handle.last_tick_ms;
+            }
+            if !out_render_ms.is_null() {
+                *out_render_ms = handle.last_render_ms;
+            }
+            if let Ok(player) = handle.player.lock() {
+                if !out_frames_run.is_null() {
+                    *out_frames_run = player.frames_run();
+                }
+                if !out_swf_fps.is_null() {
+                    *out_swf_fps = player.frame_rate();
+                }
+            }
+        }
+    }));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_get_quality(handle: *mut RufflePlayerHandle) -> u32 {
+    if handle.is_null() {
+        return 2;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &mut *handle };
+        let Ok(mut player) = handle.player.lock() else {
+            return 2;
+        };
+        match player.quality() {
+            StageQuality::Low => 0,
+            StageQuality::Medium => 1,
+            StageQuality::High
+            | StageQuality::Best
+            | StageQuality::High8x8
+            | StageQuality::High8x8Linear
+            | StageQuality::High16x16
+            | StageQuality::High16x16Linear => 2,
+        }
+    }))
+    .unwrap_or(2)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_set_quality(handle: *mut RufflePlayerHandle, quality: u32) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &mut *handle };
+        let stage_quality = match quality {
+            0 => StageQuality::Low,
+            1 => StageQuality::Medium,
+            _ => StageQuality::High,
+        };
+        if let Ok(mut player) = handle.player.lock() {
+            player.set_quality(stage_quality);
+            RufflePlayerHandle::sync_sample_count(
+                &mut player,
+                handle.scale_factor,
+                &mut handle.single_sample,
+            );
+        }
+    }));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_is_interpolating(
+    handle: *const RufflePlayerHandle,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &*handle };
+        handle
+            .player
+            .lock()
+            .map(|p| p.frame_interpolation())
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_set_interpolating(
+    handle: *mut RufflePlayerHandle,
+    interpolating: bool,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &mut *handle };
+        if let Ok(mut player) = handle.player.lock() {
+            player.set_frame_interpolation(interpolating);
+        }
+    }));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruffle_player_release_memory(handle: *mut RufflePlayerHandle) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &mut *handle };
+        if let Ok(mut player) = handle.player.lock() {
+            player.release_memory();
+        }
+    }));
 }
 
 #[unsafe(no_mangle)]

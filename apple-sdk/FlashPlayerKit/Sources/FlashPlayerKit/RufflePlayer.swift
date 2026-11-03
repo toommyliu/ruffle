@@ -3,6 +3,40 @@ import Foundation
 import QuartzCore
 import RuffleAppleFFI
 
+/// Stage rendering quality level.
+public enum RuffleStageQuality: UInt32, CaseIterable, Sendable {
+    case low = 0
+    case medium = 1
+    case high = 2
+
+    public var title: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Med"
+        case .high: return "High"
+        }
+    }
+}
+
+/// Snapshot of the player's most recent tick/render durations and frame counters.
+public struct RuffleFrameTimings: Sendable {
+    /// Duration of the last `tick()` call (AVM2 scripts, timeline, async tasks) in milliseconds.
+    public let tickMs: Double
+    /// Duration of the last `render()` call (display list walk + Metal submission) in milliseconds.
+    public let renderMs: Double
+    /// Total SWF timeline frames executed since launch.
+    public let framesRun: UInt64
+    /// Target SWF frame rate (e.g. `24.0`).
+    public let swfFrameRate: Double
+
+    public init(tickMs: Double, renderMs: Double, framesRun: UInt64, swfFrameRate: Double) {
+        self.tickMs = tickMs
+        self.renderMs = renderMs
+        self.framesRun = framesRun
+        self.swfFrameRate = swfFrameRate
+    }
+}
+
 public enum RufflePlayerError: Error, LocalizedError {
     case initializationFailed
     case invalidFileURL(URL)
@@ -277,6 +311,57 @@ public final class RufflePlayer: ObservableObject {
     public var isTextFocused: Bool {
         guard let handle else { return false }
         return ruffle_player_is_text_focused(handle)
+    }
+
+    /// Queries the most recent per-frame CPU/GPU timings and frame counters.
+    public var frameTimings: RuffleFrameTimings {
+        guard let handle else {
+            return RuffleFrameTimings(tickMs: 0, renderMs: 0, framesRun: 0, swfFrameRate: 24)
+        }
+        var tickMs: Double = 0
+        var renderMs: Double = 0
+        var framesRun: UInt64 = 0
+        var swfFps: Double = 24
+        ruffle_player_get_frame_timings(handle, &tickMs, &renderMs, &framesRun, &swfFps)
+        return RuffleFrameTimings(
+            tickMs: tickMs,
+            renderMs: renderMs,
+            framesRun: framesRun,
+            swfFrameRate: swfFps
+        )
+    }
+
+    /// Stage anti-aliasing and filter quality (`low`, `medium`, `high`).
+    public var quality: RuffleStageQuality {
+        get {
+            guard let handle else { return .high }
+            let raw = ruffle_player_get_quality(handle)
+            return RuffleStageQuality(rawValue: raw) ?? .high
+        }
+        set {
+            guard let handle else { return }
+            ruffle_player_set_quality(handle, newValue.rawValue)
+            objectWillChange.send()
+        }
+    }
+
+    /// Enables or disables Smooth Motion (sub-frame motion interpolation between 24 FPS SWF ticks).
+    public var isSmoothMotionEnabled: Bool {
+        get {
+            guard let handle else { return false }
+            return ruffle_player_is_interpolating(handle)
+        }
+        set {
+            guard let handle else { return }
+            ruffle_player_set_interpolating(handle, newValue)
+            objectWillChange.send()
+        }
+    }
+
+    /// Runs garbage collection and frees unused bitmap caches and pooled GPU buffers.
+    public func releaseMemory() {
+        guard let handle else { return }
+        ruffle_player_release_memory(handle)
     }
 
     /// Invokes a callback registered in ActionScript via `ExternalInterface.addCallback(name, fn)`.
