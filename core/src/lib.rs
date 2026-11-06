@@ -42,6 +42,8 @@ pub mod pixel_bender;
 mod player;
 mod prelude;
 pub mod socket;
+#[cfg(feature = "stats")]
+pub mod stats;
 mod streams;
 pub mod string;
 mod system_properties;

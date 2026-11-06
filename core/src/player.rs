@@ -421,6 +421,9 @@ pub struct Player {
 
     frames_run: u64,
 
+    #[cfg(feature = "stats")]
+    stats: Option<crate::stats::Stats>,
+
     frame_interpolation: bool,
 
     /// Faked time passage for fooling hand-written busy-loop FPS limiters.
@@ -572,6 +575,18 @@ impl Player {
     }
 
     pub fn tick(&mut self, dt: FloatDuration) {
+        #[cfg(feature = "stats")]
+        let started = self.stats.as_ref().map(|_| Instant::now());
+
+        self.tick_inner(dt);
+
+        #[cfg(feature = "stats")]
+        if let Some(started) = started {
+            self.stats.as_mut().unwrap().tick_time += started.elapsed();
+        }
+    }
+
+    fn tick_inner(&mut self, dt: FloatDuration) {
         if !self.is_playing() {
             return;
         }
@@ -2137,6 +2152,9 @@ impl Player {
 
     #[instrument(level = "debug", skip_all)]
     pub fn render(&mut self) {
+        #[cfg(feature = "stats")]
+        let started = self.stats.as_ref().map(|_| Instant::now());
+
         let invalidated = self.enter_arena(|_, gc_root, _| gc_root.stage.invalidated());
 
         if invalidated {
@@ -2206,6 +2224,49 @@ impl Player {
             .submit_frame(background_color, commands, cache_draws);
 
         self.needs_render = false;
+
+        #[cfg(feature = "stats")]
+        if let Some(started) = started {
+            let stats = self.stats.as_mut().unwrap();
+            *stats.render_time.get_or_insert_default() += started.elapsed();
+            stats.renders += 1;
+        }
+    }
+
+    /// Resets collection and preallocates storage for the newest `capacity` samples.
+    #[cfg(feature = "stats")]
+    pub fn enable_stats(&mut self, capacity: std::num::NonZeroUsize) {
+        self.stats = Some(crate::stats::Stats::new(capacity, self.frames_run));
+    }
+
+    #[cfg(feature = "stats")]
+    pub fn stats_enabled(&self) -> bool {
+        self.stats.is_some()
+    }
+
+    /// Frees samples and stops stats clock reads and allocations.
+    #[cfg(feature = "stats")]
+    pub fn disable_stats(&mut self) {
+        self.stats = None;
+    }
+
+    /// Call after tick/render work; buffers a sample and returns it, or `None` if disabled.
+    #[cfg(feature = "stats")]
+    pub fn sample_stats(
+        &mut self,
+        memory: Option<crate::stats::MemoryStats>,
+    ) -> Option<crate::stats::StatsSample> {
+        self.stats
+            .as_mut()
+            .map(|stats| stats.sample(self.frames_run, self.frame_rate, memory))
+    }
+
+    /// Drains owned samples oldest first, preserving counts and buffer capacity.
+    #[cfg(feature = "stats")]
+    pub fn drain_stats(&mut self) -> impl Iterator<Item = crate::stats::StatsSample> + '_ {
+        self.stats
+            .iter_mut()
+            .flat_map(|stats| stats.samples.drain(..))
     }
 
     pub fn frames_run(&self) -> u64 {
@@ -3186,6 +3247,8 @@ impl PlayerBuilder {
                 frame_phase: Default::default(),
                 frame_accumulator: FloatDuration::ZERO,
                 frames_run: 0,
+                #[cfg(feature = "stats")]
+                stats: None,
                 frame_interpolation: false,
                 start_time: Instant::now(),
                 time_offset: 0,
