@@ -1676,7 +1676,7 @@ impl<'gc> EditText<'gc> {
             let local_position = matrix * position;
 
             if let Some((text, _tf, font, params)) =
-                layout_box.as_renderable_text(self.0.text_spans.borrow().text())
+                layout_box.as_renderable_text(self.0.text_spans.borrow().displayed_text())
             {
                 let mut result = 0;
                 font.evaluate(text, params, |pos, _transform, _glyph, advance, x| {
