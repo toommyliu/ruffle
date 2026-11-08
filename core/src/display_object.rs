@@ -1654,7 +1654,7 @@ pub trait TDisplayObject<'gc>:
     /// The world bounding box of this object including children, relative to the stage.
     #[no_dynamic]
     fn world_bounds(self, mode: BoundsMode) -> Rectangle<Twips> {
-        self.bounds_with_transform(&self.local_to_global_matrix(), mode)
+        self.bounds_with_transform(&self.local_to_global_matrix_without_own_scroll_rect(), mode)
     }
 
     /// The world bounding box of this object, as reported by `Transform.pixelBounds`.
@@ -1777,7 +1777,6 @@ pub trait TDisplayObject<'gc>:
         }
     }
 
-    /// Should only be used to implement 'Transform.concatenatedMatrix'
     #[no_dynamic]
     fn local_to_global_matrix_without_own_scroll_rect(self) -> Matrix {
         let generation = GLOBAL_MATRIX_GENERATION.get();
@@ -3890,6 +3889,31 @@ mod interpolation_tests {
             .with_movie(SwfMovie::empty(8, None))
             .build();
         player.lock().unwrap().mutate_with_update_context(f);
+    }
+
+    #[test]
+    fn scrolled_clips_hit_test_where_they_are_drawn() {
+        with_update(|update| {
+            let px = Twips::from_pixels_i32;
+            let clip = MovieClip::new(update.root_swf.clone(), update.gc());
+            clip.set_x(px(20));
+            clip.set_y(px(30));
+            clip.base().scroll_rect.set(Some(Rectangle {
+                x_min: px(20),
+                y_min: px(70),
+                x_max: px(120),
+                y_max: px(120),
+            }));
+            let shown = Rectangle {
+                x_min: px(20),
+                y_min: px(30),
+                x_max: px(120),
+                y_max: px(80),
+            };
+            assert_eq!(clip.world_bounds(BoundsMode::Engine), shown);
+            assert!(clip.hit_test_bounds(Point::new(px(70), px(70))));
+            assert!(!clip.hit_test_bounds(Point::new(px(70), px(10))));
+        });
     }
 
     #[test]
