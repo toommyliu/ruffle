@@ -87,6 +87,7 @@ pub struct InputManager {
     last_key: KeyCode,
     last_char: Option<char>,
     last_click: Option<ClickEventData>,
+    wheel_remainder: f64,
 
     /// A map from gamepad buttons to key codes.
     gamepad_button_mapping: HashMap<GamepadButton, KeyCode>,
@@ -103,6 +104,7 @@ impl InputManager {
             last_key: KeyCode::UNKNOWN,
             last_char: None,
             last_click: None,
+            wheel_remainder: 0.0,
             gamepad_button_mapping,
             key_code_mapping_type: KeyCodeMappingType::Logical,
         }
@@ -220,7 +222,9 @@ impl InputManager {
                 index: self.update_last_click(x, y, index),
             },
             PlayerEvent::MouseLeave => InputEvent::MouseLeave,
-            PlayerEvent::MouseWheel { delta } => InputEvent::MouseWheel { delta },
+            PlayerEvent::MouseWheel { delta } => InputEvent::MouseWheel {
+                delta: MouseWheelDelta::Lines(self.whole_wheel_lines(delta)?),
+            },
 
             PlayerEvent::TextInput { codepoint } => InputEvent::TextInput { codepoint },
             PlayerEvent::TextControl { code } => InputEvent::TextControl { code },
@@ -278,6 +282,21 @@ impl InputManager {
             InputEvent::MouseUp { button, .. } => self.remove_key(button.into()),
             _ => {}
         }
+    }
+
+    fn whole_wheel_lines(&mut self, delta: MouseWheelDelta) -> Option<f64> {
+        let lines = delta.lines();
+        if lines == 0.0 {
+            return None;
+        }
+        let total = if lines.signum() == self.wheel_remainder.signum() {
+            self.wheel_remainder + lines
+        } else {
+            lines
+        };
+        let whole = total.trunc();
+        self.wheel_remainder = total - whole;
+        (whole != 0.0).then_some(whole)
     }
 
     fn update_last_click(&mut self, x: f64, y: f64, index: Option<usize>) -> usize {
@@ -687,5 +706,65 @@ mod tests {
         assert!(!input.is_key_down(KeyCode::ALT));
         assert!(input.is_key_down(KeyCode::SHIFT));
         assert!(input.stale_modifiers(true, false, false).is_empty());
+    }
+
+    fn wheel_lines(input: &mut InputManager, delta: MouseWheelDelta) -> Option<f64> {
+        match input.process_event(PlayerEvent::MouseWheel { delta })? {
+            InputEvent::MouseWheel {
+                delta: MouseWheelDelta::Lines(lines),
+            } => Some(lines),
+            event => panic!("expected a whole-line wheel event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn small_pixel_wheel_deltas_add_up_to_lines() {
+        let mut input = InputManager::new(HashMap::new());
+
+        let lines: Vec<_> = [-30.0, -30.0, -30.0, -30.0, -250.0]
+            .map(|px| wheel_lines(&mut input, MouseWheelDelta::Pixels(px)))
+            .into();
+
+        assert_eq!(lines, [None, None, None, Some(-1.0), Some(-2.0)]);
+    }
+
+    #[test]
+    fn reversing_the_wheel_drops_the_partial_line() {
+        let mut input = InputManager::new(HashMap::new());
+
+        assert_eq!(wheel_lines(&mut input, MouseWheelDelta::Pixels(90.0)), None);
+        assert_eq!(
+            wheel_lines(&mut input, MouseWheelDelta::Pixels(-60.0)),
+            None
+        );
+        assert_eq!(
+            wheel_lines(&mut input, MouseWheelDelta::Pixels(-60.0)),
+            Some(-1.0)
+        );
+    }
+
+    #[test]
+    fn zero_wheel_deltas_keep_the_partial_line() {
+        let mut input = InputManager::new(HashMap::new());
+
+        let lines: Vec<_> = [-60.0, 0.0, -60.0]
+            .map(|px| wheel_lines(&mut input, MouseWheelDelta::Pixels(px)))
+            .into();
+
+        assert_eq!(lines, [None, None, Some(-1.0)]);
+    }
+
+    #[test]
+    fn whole_line_wheel_deltas_pass_through() {
+        let mut input = InputManager::new(HashMap::new());
+
+        assert_eq!(
+            wheel_lines(&mut input, MouseWheelDelta::Lines(3.0)),
+            Some(3.0)
+        );
+        assert_eq!(
+            wheel_lines(&mut input, MouseWheelDelta::Lines(-3.0)),
+            Some(-3.0)
+        );
     }
 }
