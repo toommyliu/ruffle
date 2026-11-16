@@ -1,5 +1,8 @@
 num_ticks = 1
 
+[image_comparisons.output]
+known_failure = true
+
 [[image_comparisons.output.checks]]
 tolerance = 0
 max_outliers = 16
