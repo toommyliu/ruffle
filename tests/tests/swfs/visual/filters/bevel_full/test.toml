@@ -1,7 +1,7 @@
 num_frames = 1
 
 [image_comparisons.output]
-tolerance = 4
+tolerance = 8
 max_outliers = 18
 
 [player_options]

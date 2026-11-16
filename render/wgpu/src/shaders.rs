@@ -22,6 +22,8 @@ pub struct Shaders {
     pub color_matrix_filter: wgpu::ShaderModule,
     pub blur_filter: wgpu::ShaderModule,
     pub blur_2d_filter: wgpu::ShaderModule,
+    pub blur_shrink_filter: wgpu::ShaderModule,
+    pub blur_grow_filter: wgpu::ShaderModule,
     pub glow_filter: wgpu::ShaderModule,
     pub bevel_filter: wgpu::ShaderModule,
     pub displacement_map_filter: wgpu::ShaderModule,
@@ -118,6 +120,16 @@ impl Shaders {
             "filter/blur_2d.wgsl",
             include_str!("../shaders/filter/blur_2d.wgsl"),
         );
+        let blur_shrink_filter = make_filter_shader(
+            device,
+            "filter/blur_shrink.wgsl",
+            include_str!("../shaders/filter/blur_shrink.wgsl"),
+        );
+        let blur_grow_filter = make_filter_shader(
+            device,
+            "filter/blur_grow.wgsl",
+            include_str!("../shaders/filter/blur_grow.wgsl"),
+        );
         let glow_filter = make_filter_shader(
             device,
             "filter/glow.wgsl",
@@ -170,6 +182,8 @@ impl Shaders {
             color_matrix_filter,
             blur_filter,
             blur_2d_filter,
+            blur_shrink_filter,
+            blur_grow_filter,
             glow_filter,
             bevel_filter,
             displacement_map_filter,

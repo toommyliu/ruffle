@@ -7,7 +7,7 @@ use crate::surface::target::CommandTarget;
 use crate::utils::SampleCountMap;
 use bytemuck::{Pod, Zeroable};
 use std::sync::OnceLock;
-use swf::BlurFilter as BlurFilterArgs;
+use swf::{BlurFilter as BlurFilterArgs, Fixed16};
 use wgpu::util::StagingBelt;
 use wgpu::{BufferSlice, CommandEncoder, RenderPipeline, TextureView};
 
@@ -117,6 +117,31 @@ impl Kernel {
 
 const MAX_SINGLE_PASS_SAMPLES: f32 = 30.0;
 
+/// Blurs at least this many pixels wide are made at half size, and those four
+/// times as wide at a quarter size.
+const HALF_SIZE_BLUR: f32 = 16.0;
+
+fn reduction(filter: &BlurFilterArgs) -> (u32, u32) {
+    let factor = |blur: Fixed16| match blur.to_f32() {
+        blur if blur >= HALF_SIZE_BLUR * 4.0 => 4,
+        blur if blur >= HALF_SIZE_BLUR => 2,
+        _ => 1,
+    };
+    (factor(filter.blur_x), factor(filter.blur_y))
+}
+
+fn reduced(filter: &BlurFilterArgs, (factor_x, factor_y): (u32, u32)) -> BlurFilterArgs {
+    BlurFilterArgs {
+        blur_x: Fixed16::from_f32(filter.blur_x.to_f32() / factor_x as f32),
+        blur_y: Fixed16::from_f32(filter.blur_y.to_f32() / factor_y as f32),
+        flags: filter.flags,
+    }
+}
+
+fn reduced_size((width, height): (u32, u32), (factor_x, factor_y): (u32, u32)) -> (u32, u32) {
+    (width.div_ceil(factor_x), height.div_ceil(factor_y))
+}
+
 fn single_pass_kernels(filter: &BlurFilterArgs) -> Option<[Kernel; 2]> {
     let kernel_x = Kernel::new(filter.blur_x.to_f32())?;
     let kernel_y = Kernel::new(filter.blur_y.to_f32())?;
@@ -145,7 +170,59 @@ impl Blur2dUniform {
     }
 }
 
+/// A 1:1 match of `struct Filter` in `blur_shrink.wgsl` and `blur_grow.wgsl`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ResampleUniform {
+    step: [f32; 2],
+    texel: [f32; 2],
+    samples: [f32; 2],
+    m: f32,
+    alpha: f32,
+    full_size: f32,
+    _padding: [f32; 3],
+    uv_bounds: [f32; 4],
+}
+
+/// A part of a texture for `BlurFilter::apply_two_pass_in_place` to blur.
+pub struct InPlaceBlur<'a> {
+    pub source: FilterSource<'a>,
+    pub filter: &'a BlurFilterArgs,
+    /// How many times smaller, horizontally and vertically, to blur it.
+    pub factor: (u32, u32),
+    /// Whether its last pass scales the result back up to the part's size.
+    pub grow: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Resampling {
+    Shrink,
+    Grow,
+}
+
+impl InPlaceBlur<'_> {
+    fn steps(&self) -> usize {
+        self.filter.num_passes() as usize * 2
+    }
+
+    fn resampling(&self, step: usize) -> Option<Resampling> {
+        if self.factor == (1, 1) {
+            None
+        } else if step == 0 {
+            Some(Resampling::Shrink)
+        } else if self.grow && step + 1 == self.steps() {
+            Some(Resampling::Grow)
+        } else {
+            None
+        }
+    }
+}
+
 pub struct BlurFilter {
+    bind_group_layout_resample: wgpu::BindGroupLayout,
+    pipeline_layout_resample: wgpu::PipelineLayout,
+    pipelines_shrink: SampleCountMap<OnceLock<wgpu::RenderPipeline>>,
+    pipelines_grow: SampleCountMap<OnceLock<wgpu::RenderPipeline>>,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group_layout_2d: wgpu::BindGroupLayout,
     pipeline_layout_2d: wgpu::PipelineLayout,
@@ -248,7 +325,39 @@ impl BlurFilter {
             immediate_size: 0,
         });
 
+        let bind_group_layout_resample =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    texture,
+                    sampling,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                                ResampleUniform,
+                            >()
+                                as u64),
+                        },
+                        count: None,
+                    },
+                ],
+                label: create_debug_label!("Resampling blur filter binds").as_deref(),
+            });
+        let pipeline_layout_resample =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&bind_group_layout_resample)],
+                immediate_size: 0,
+            });
+
         Self {
+            bind_group_layout_resample,
+            pipeline_layout_resample,
+            pipelines_shrink: Default::default(),
+            pipelines_grow: Default::default(),
             bind_group_layout_2d,
             pipeline_layout_2d,
             uniform_buffer_2d,
@@ -274,6 +383,29 @@ impl BlurFilter {
         })
     }
 
+    fn pipeline_resample(
+        &self,
+        descriptors: &Descriptors,
+        msaa_sample_count: u32,
+        resampling: Resampling,
+    ) -> &wgpu::RenderPipeline {
+        let (pipelines, module) = match resampling {
+            Resampling::Shrink => (
+                &self.pipelines_shrink,
+                &descriptors.shaders.blur_shrink_filter,
+            ),
+            Resampling::Grow => (&self.pipelines_grow, &descriptors.shaders.blur_grow_filter),
+        };
+        pipelines.get_or_init(msaa_sample_count, || {
+            make_pipeline(
+                descriptors,
+                &self.pipeline_layout_resample,
+                module,
+                msaa_sample_count,
+            )
+        })
+    }
+
     fn pipeline_2d(
         &self,
         descriptors: &Descriptors,
@@ -291,6 +423,82 @@ impl BlurFilter {
 
     #[expect(clippy::too_many_arguments)]
     pub fn apply(
+        &self,
+        descriptors: &Descriptors,
+        texture_pool: &mut TexturePool,
+        draw_encoder: &mut wgpu::CommandEncoder,
+        staging_belt: &mut StagingBelt,
+        source: &FilterSource,
+        filter: &BlurFilterArgs,
+        destination: Option<&Texture>,
+    ) -> Option<CommandTarget> {
+        let factor = self.in_place_reduction(filter);
+        let size = source.texture.size();
+        if factor == (1, 1)
+            || source.point != (0, 0)
+            || source.size != (size.width, size.height)
+            || source.texture.sample_count() != 1
+            || source.texture.format() != wgpu::TextureFormat::Rgba8Unorm
+        {
+            return self.apply_full_size(
+                descriptors,
+                texture_pool,
+                draw_encoder,
+                staging_belt,
+                source,
+                filter,
+                destination,
+            );
+        }
+        let steps = CommandTarget::new(
+            descriptors,
+            texture_pool,
+            size,
+            wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
+            draw_encoder,
+        );
+        let target = CommandTarget::new(
+            descriptors,
+            texture_pool,
+            size,
+            wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            match destination.filter(|destination| {
+                destination.texture.size() == size
+                    && destination.texture.format() == wgpu::TextureFormat::Rgba8Unorm
+                    && destination.texture.sample_count() == 1
+            }) {
+                Some(destination) => RenderTargetMode::ExistingWithColor(
+                    destination.texture.clone(),
+                    destination.view().clone(),
+                    wgpu::Color::TRANSPARENT,
+                ),
+                None => RenderTargetMode::FreshWithColor(wgpu::Color::TRANSPARENT),
+            },
+            draw_encoder,
+        );
+        self.apply_two_pass_in_place(
+            descriptors,
+            draw_encoder,
+            staging_belt,
+            [&steps, &target],
+            &[InPlaceBlur {
+                source: FilterSource {
+                    clamp_to_rect: true,
+                    ..*source
+                },
+                filter,
+                factor,
+                grow: true,
+            }],
+        );
+        Some(target)
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn apply_full_size(
         &self,
         descriptors: &Descriptors,
         texture_pool: &mut TexturePool,
@@ -645,67 +853,153 @@ impl BlurFilter {
             && Kernel::new(filter.blur_y.to_f32()).is_some()
     }
 
+    /// How many times smaller, horizontally and vertically,
+    /// `apply_two_pass_in_place` can make `filter`'s result.
+    pub fn in_place_reduction(&self, filter: &BlurFilterArgs) -> (u32, u32) {
+        if self.is_two_pass(filter) {
+            reduction(filter)
+        } else {
+            (1, 1)
+        }
+    }
+
     /// Blurs parts of one texture, each with a filter that `is_two_pass`, a
     /// direction at a time for all of them: from the parts into `targets[0]`,
     /// then back and forth between the two targets, which must be the size of
-    /// the source. The results end up in the same places in `targets[1]`.
+    /// the source. The results end up in the same places in `targets[1]`; one
+    /// that doesn't grow stays its factor times smaller, at the start of its
+    /// place.
     pub fn apply_two_pass_in_place(
         &self,
         descriptors: &Descriptors,
         draw_encoder: &mut wgpu::CommandEncoder,
         staging_belt: &mut StagingBelt,
         targets: [&CommandTarget; 2],
-        blurs: &[(FilterSource, &BlurFilterArgs)],
+        blurs: &[InPlaceBlur],
     ) {
-        let Some((first, _)) = blurs.first() else {
+        let Some(first) = blurs.first() else {
             return;
         };
-        let width = first.texture.width() as f32;
-        let height = first.texture.height() as f32;
+        let width = first.source.texture.width() as f32;
+        let height = first.source.texture.height() as f32;
+        let direction = |step: usize| {
+            if step.is_multiple_of(2) {
+                [1.0 / width, 0.0]
+            } else {
+                [0.0, 1.0 / height]
+            }
+        };
         let steps = blurs
             .iter()
-            .map(|(_, filter)| filter.num_passes() as usize * 2)
+            .map(InPlaceBlur::steps)
             .max()
             .unwrap_or_default();
+        let alignment = descriptors.limits.min_uniform_buffer_offset_alignment as usize;
         let size = std::mem::size_of::<BlurUniform>();
-        let stride =
-            size.next_multiple_of(descriptors.limits.min_uniform_buffer_offset_alignment as usize);
+        let stride = size.next_multiple_of(alignment);
+        let resample_size = std::mem::size_of::<ResampleUniform>();
+        let resample_stride = resample_size.next_multiple_of(alignment);
         let mut uniforms = vec![0; stride * steps * blurs.len()];
-        let mut vertices = Vec::with_capacity(blurs.len());
-        for (i, (source, filter)) in blurs.iter().enumerate() {
+        let mut resample_uniforms = vec![0; resample_stride * 2 * blurs.len()];
+        let mut vertices = Vec::with_capacity(blurs.len() * 3);
+        for (i, blur) in blurs.iter().enumerate() {
+            let InPlaceBlur { source, factor, .. } = *blur;
+            let filter = reduced(blur.filter, factor);
             let kernels = [
                 Kernel::new(filter.blur_x.to_f32()).expect("Blurs horizontally"),
                 Kernel::new(filter.blur_y.to_f32()).expect("Blurs vertically"),
             ];
-            for step in 0..filter.num_passes() as usize * 2 {
+            let small = reduced_size(source.size, factor);
+            let result = FilterSource {
+                size: small,
+                ..source
+            };
+            for step in 0..blur.steps() {
                 let kernel = &kernels[step % 2];
-                let uniform = BlurUniform {
-                    direction: if step % 2 == 0 {
-                        [1.0 / width, 0.0]
-                    } else {
-                        [0.0, 1.0 / height]
-                    },
-                    full_size: kernel.full_size,
-                    m: kernel.m,
-                    m2: kernel.m * 2.0,
-                    first_weight: kernel.first_weight,
-                    last_offset: kernel.last_offset,
-                    last_weight: kernel.last_weight,
-                    uv_bounds: source.uv_bounds(),
+                let [x, y] = direction(step);
+                let Some(resampling) = blur.resampling(step) else {
+                    let uniform = BlurUniform {
+                        direction: [x, y],
+                        full_size: kernel.full_size,
+                        m: kernel.m,
+                        m2: kernel.m * 2.0,
+                        first_weight: kernel.first_weight,
+                        last_offset: kernel.last_offset,
+                        last_weight: kernel.last_weight,
+                        uv_bounds: if step == 0 {
+                            source.uv_bounds()
+                        } else {
+                            result.uv_bounds()
+                        },
+                    };
+                    let offset = (step * blurs.len() + i) * stride;
+                    uniforms[offset..offset + size].copy_from_slice(bytemuck::bytes_of(&uniform));
+                    continue;
                 };
-                let offset = (step * blurs.len() + i) * stride;
-                uniforms[offset..offset + size].copy_from_slice(bytemuck::bytes_of(&uniform));
+                let uniform = match resampling {
+                    Resampling::Shrink => ResampleUniform {
+                        step: [x * factor.0 as f32, y * factor.1 as f32],
+                        texel: [1.0 / width, 1.0 / height],
+                        samples: [factor.0.div_ceil(2) as f32, factor.1.div_ceil(2) as f32],
+                        m: kernel.m,
+                        alpha: kernel.first_weight,
+                        full_size: kernel.full_size,
+                        _padding: [0.0; 3],
+                        uv_bounds: source.uv_bounds(),
+                    },
+                    Resampling::Grow => ResampleUniform {
+                        step: [x, y],
+                        texel: [0.0; 2],
+                        samples: [0.0; 2],
+                        m: kernel.m,
+                        alpha: kernel.first_weight,
+                        full_size: kernel.full_size,
+                        _padding: [0.0; 3],
+                        uv_bounds: result.uv_bounds(),
+                    },
+                };
+                let offset = (2 * i + resampling as usize) * resample_stride;
+                resample_uniforms[offset..offset + resample_size]
+                    .copy_from_slice(bytemuck::bytes_of(&uniform));
             }
-            vertices.push(source.vertices());
+            vertices.push(
+                FilterSource {
+                    size: (small.0 * factor.0, small.1 * factor.1),
+                    ..source
+                }
+                .vertices(),
+            );
+            vertices.push(result.vertices());
+            vertices.push(
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].map(|[x, y]| FilterVertex {
+                    position: [x, y],
+                    uv: [
+                        (source.point.0 as f32 + x * source.size.0 as f32 / factor.0 as f32)
+                            / width,
+                        (source.point.1 as f32 + y * source.size.1 as f32 / factor.1 as f32)
+                            / height,
+                    ],
+                }),
+            );
         }
+        let resamples = blurs.iter().any(|blur| blur.factor != (1, 1));
         let mut scratch = descriptors.scratch.lock().expect("Scratch lock");
-        let (uniforms, uniforms_offset) = scratch.write(
+        let uniforms = scratch.write(
             &descriptors.device,
             staging_belt,
             draw_encoder,
             &uniforms,
             stride as u64,
         );
+        let resample_uniforms = resamples.then(|| {
+            scratch.write(
+                &descriptors.device,
+                staging_belt,
+                draw_encoder,
+                &resample_uniforms,
+                resample_stride as u64,
+            )
+        });
         let (vertices, vertices_offset) = scratch.write(
             &descriptors.device,
             staging_belt,
@@ -715,40 +1009,51 @@ impl BlurFilter {
         );
         drop(scratch);
         let vertices_size = std::mem::size_of::<[FilterVertex; 4]>() as u64;
-        let pipeline = self.pipeline(descriptors, first.texture.sample_count());
+        let sample_count = first.source.texture.sample_count();
+        let sampler = descriptors.bitmap_samplers.get_sampler(false, true);
 
         for step in 0..steps {
-            let source = if step == 0 {
-                first.view
+            let input = if step == 0 {
+                first.source.view
             } else {
                 targets[(step - 1) % 2].color_view()
             };
-            let bind_group = descriptors
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: create_debug_label!("Blurs group").as_deref(),
-                    layout: &self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(source),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(
-                                descriptors.bitmap_samplers.get_sampler(false, true),
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                buffer: &uniforms,
-                                offset: uniforms_offset,
-                                size: wgpu::BufferSize::new(size as u64),
-                            }),
-                        },
-                    ],
-                });
+            let used = |resampled: bool| {
+                blurs
+                    .iter()
+                    .any(|blur| step < blur.steps() && blur.resampling(step).is_some() == resampled)
+            };
+            let group = |layout, (buffer, offset): &(wgpu::Buffer, u64), size: usize| {
+                descriptors
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: create_debug_label!("Blurs group").as_deref(),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(input),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer,
+                                    offset: *offset,
+                                    size: wgpu::BufferSize::new(size as u64),
+                                }),
+                            },
+                        ],
+                    })
+            };
+            let blur_group = used(false).then(|| group(&self.bind_group_layout, &uniforms, size));
+            let resample_group = resample_uniforms
+                .as_ref()
+                .filter(|_| used(true))
+                .map(|uniforms| group(&self.bind_group_layout_resample, uniforms, resample_size));
 
             crate::backend::count_render_pass(crate::stats::PassKind::Filter);
             let mut render_pass = draw_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -756,7 +1061,6 @@ impl BlurFilter {
                 color_attachments: &[targets[step % 2].color_attachments()],
                 ..Default::default()
             });
-            render_pass.set_pipeline(pipeline);
             render_pass.set_index_buffer(
                 descriptors.quad.indices.slice(..),
                 wgpu::IndexFormat::Uint32,
@@ -764,29 +1068,55 @@ impl BlurFilter {
             if descriptors.base_vertex {
                 render_pass.set_vertex_buffer(0, vertices.slice(vertices_offset..));
             }
-            for (i, (source, filter)) in blurs.iter().enumerate() {
-                if step >= filter.num_passes() as usize * 2 {
+            let mut pipeline = None;
+            for (i, blur) in blurs.iter().enumerate() {
+                if step >= blur.steps() {
                     continue;
                 }
+                let resample = blur.resampling(step);
+                let (viewport, set) = match resample {
+                    Some(Resampling::Grow) => (blur.source.size, 2),
+                    _ => (
+                        reduced_size(blur.source.size, blur.factor),
+                        usize::from(step > 0),
+                    ),
+                };
                 render_pass.set_viewport(
-                    source.point.0 as f32,
-                    source.point.1 as f32,
-                    source.size.0 as f32,
-                    source.size.1 as f32,
+                    blur.source.point.0 as f32,
+                    blur.source.point.1 as f32,
+                    viewport.0 as f32,
+                    viewport.1 as f32,
                     0.0,
                     1.0,
                 );
+                if pipeline != Some(resample) {
+                    render_pass.set_pipeline(match resample {
+                        Some(resampling) => {
+                            self.pipeline_resample(descriptors, sample_count, resampling)
+                        }
+                        None => self.pipeline(descriptors, sample_count),
+                    });
+                    pipeline = Some(resample);
+                }
+                let (group, offset) = match resample {
+                    Some(resampling) => (
+                        &resample_group,
+                        (2 * i + resampling as usize) * resample_stride,
+                    ),
+                    None => (&blur_group, (step * blurs.len() + i) * stride),
+                };
                 render_pass.set_bind_group(
                     0,
-                    &bind_group,
-                    &[((step * blurs.len() + i) * stride) as u32],
+                    group.as_ref().expect("Made for the blurs in this step"),
+                    &[offset as u32],
                 );
+                let set = 3 * i + set;
                 if descriptors.base_vertex {
-                    render_pass.draw_indexed(0..6, 4 * i as i32, 0..1);
+                    render_pass.draw_indexed(0..6, 4 * set as i32, 0..1);
                 } else {
                     render_pass.set_vertex_buffer(
                         0,
-                        vertices.slice(vertices_offset + i as u64 * vertices_size..),
+                        vertices.slice(vertices_offset + set as u64 * vertices_size..),
                     );
                     render_pass.draw_indexed(0..6, 0, 0..1);
                 }

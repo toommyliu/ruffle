@@ -2,7 +2,7 @@ use crate::buffer_builder::BufferBuilder;
 use crate::buffer_pool::{BufferPool, TexturePool};
 use crate::context3d::WgpuContext3D;
 use crate::dynamic_transforms::DynamicTransforms;
-use crate::filters::FilterSource;
+use crate::filters::{FilterSource, InPlaceBlur};
 use crate::mesh::{CommonGradient, Mesh, PendingDraw};
 use crate::mesh_arena::BufferArena;
 use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
@@ -585,7 +585,8 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         );
         atlas.ensure_cleared(&mut self.active_frame.command_encoder);
 
-        let blur = &self.descriptors.filters.blur;
+        let descriptors = self.descriptors.clone();
+        let blur = &descriptors.filters.blur;
         let batched =
             |filter: &swf::BlurFilter| blur.is_single_pass(filter) || blur.is_two_pass(filter);
         let (blurred, page): (Vec<_>, Vec<_>) = page.into_iter().partition(|(entry, _)| {
@@ -604,25 +605,31 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let blurs = blurred
             .iter()
             .map(|(entry, point)| match &entry.filters[0] {
-                Filter::BlurFilter(filter) => (
-                    atlas_part(&atlas, *point, as_texture(&entry.handle)),
+                Filter::BlurFilter(filter) => InPlaceBlur {
+                    source: atlas_part(&atlas, *point, as_texture(&entry.handle)),
                     filter,
-                ),
+                    factor: blur.in_place_reduction(filter),
+                    grow: true,
+                },
                 _ => unreachable!("Only blurred entries"),
             })
             .chain(
                 glowed
                     .iter()
                     .zip(&inner_blurs)
-                    .map(|((entry, point), filter)| {
-                        (
-                            atlas_part(&atlas, *point, as_texture(&entry.handle)),
-                            filter,
-                        )
+                    .map(|((entry, point), filter)| InPlaceBlur {
+                        source: atlas_part(&atlas, *point, as_texture(&entry.handle)),
+                        filter,
+                        factor: blur.in_place_reduction(filter),
+                        grow: false,
                     }),
             );
         let (single, double): (Vec<_>, Vec<_>) =
-            blurs.partition(|(_, filter)| blur.is_single_pass(filter));
+            blurs.partition(|blur_part| blur.is_single_pass(blur_part.filter));
+        let single: Vec<_> = single
+            .into_iter()
+            .map(|InPlaceBlur { source, filter, .. }| (source, filter))
+            .collect();
         if single.is_empty() && double.is_empty() {
             return self.filter_parts(&atlas, page);
         }
@@ -641,8 +648,8 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let blur_target = new_target(self);
         if !double.is_empty() {
             let steps = new_target(self);
-            self.descriptors.filters.blur.apply_two_pass_in_place(
-                &self.descriptors,
+            blur.apply_two_pass_in_place(
+                &descriptors,
                 &mut self
                     .profiler
                     .scope("Blur CAB atlas", &mut self.active_frame.command_encoder),
@@ -673,16 +680,21 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                         unreachable!("Only glowing entries")
                     };
                     let source = atlas_part(&atlas, *point, as_texture(&entry.handle));
+                    let factor = blur.in_place_reduction(&filter.inner_blur_filter());
                     let blurred = FilterSource {
                         texture: blur_target.color_texture(),
                         view: blur_target.color_view(),
+                        size: (
+                            source.size.0.div_ceil(factor.0),
+                            source.size.1.div_ceil(factor.1),
+                        ),
                         ..source
                     };
-                    (source, blurred, filter)
+                    (source, blurred, factor, filter)
                 })
                 .collect();
-            self.descriptors.filters.glow.apply_in_place(
-                &self.descriptors,
+            descriptors.filters.glow.apply_in_place(
+                &descriptors,
                 &mut self
                     .profiler
                     .scope("Glow CAB atlas", &mut self.active_frame.command_encoder),

@@ -14,6 +14,7 @@ use crate::buffer_pool::TexturePool;
 use crate::descriptors::Descriptors;
 use crate::filters::bevel::BevelFilter;
 use crate::filters::blur::BlurFilter;
+pub use crate::filters::blur::InPlaceBlur;
 use crate::filters::color_matrix::ColorMatrixFilter;
 use crate::filters::displacement_map::DisplacementMapFilter;
 use crate::filters::drop_shadow::DropShadowFilter;
@@ -103,6 +104,24 @@ impl<'a> FilterSource<'a> {
             position,
             source_uv: self.uv_at(position, (0.0, 0.0)),
             blur_uv: blurred.uv_at(position, blur_offset),
+        })
+    }
+
+    /// `blurred` holds this source's blur at its start, `factor` times smaller.
+    pub fn vertices_with_reduced_blur(
+        &self,
+        blurred: &FilterSource,
+        (factor_x, factor_y): (u32, u32),
+    ) -> [FilterVertexWithBlur; 4] {
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].map(|[x, y]| FilterVertexWithBlur {
+            position: [x, y],
+            source_uv: self.uv_at([x, y], (0.0, 0.0)),
+            blur_uv: [
+                (blurred.point.0 as f32 + x * self.size.0 as f32 / factor_x as f32)
+                    / blurred.texture.width() as f32,
+                (blurred.point.1 as f32 + y * self.size.1 as f32 / factor_y as f32)
+                    / blurred.texture.height() as f32,
+            ],
         })
     }
 

@@ -59,7 +59,7 @@ impl GlowFilter {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -67,7 +67,7 @@ impl GlowFilter {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -85,7 +85,7 @@ impl GlowFilter {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -273,21 +273,23 @@ impl GlowFilter {
         draw_encoder: &mut wgpu::CommandEncoder,
         staging_belt: &mut StagingBelt,
         target: &CommandTarget,
-        glows: &[(FilterSource, FilterSource, &GlowFilterArgs)],
+        glows: &[(FilterSource, FilterSource, (u32, u32), &GlowFilterArgs)],
     ) {
-        let Some((first, first_blurred, _)) = glows.first() else {
+        let Some((first, first_blurred, ..)) = glows.first() else {
             return;
         };
+        // Blurs made smaller are scaled back up as they're read.
+        let reduced = glows.iter().any(|(_, _, factor, _)| *factor != (1, 1));
         let size = std::mem::size_of::<GlowUniform>();
         let stride =
             size.next_multiple_of(descriptors.limits.min_uniform_buffer_offset_alignment as usize);
         let mut uniforms = vec![0; stride * glows.len()];
-        for ((_, _, filter), uniform) in glows.iter().zip(uniforms.chunks_mut(stride)) {
+        for ((.., filter), uniform) in glows.iter().zip(uniforms.chunks_mut(stride)) {
             uniform[..size].copy_from_slice(bytemuck::bytes_of(&GlowUniform::new(filter)));
         }
         let vertices: Vec<_> = glows
             .iter()
-            .map(|(source, blurred, _)| source.vertices_with_blur_offset(blurred, (0.0, 0.0)))
+            .map(|(source, blurred, factor, _)| source.vertices_with_reduced_blur(blurred, *factor))
             .collect();
         let mut scratch = descriptors.scratch.lock().expect("Scratch lock");
         let (uniforms, uniforms_offset) = scratch.write(
@@ -318,7 +320,7 @@ impl GlowFilter {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(
-                            descriptors.bitmap_samplers.get_sampler(false, false),
+                            descriptors.bitmap_samplers.get_sampler(false, reduced),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -351,7 +353,7 @@ impl GlowFilter {
         if descriptors.base_vertex {
             render_pass.set_vertex_buffer(0, vertices.slice(vertices_offset..));
         }
-        for (i, (source, _, _)) in glows.iter().enumerate() {
+        for (i, (source, ..)) in glows.iter().enumerate() {
             render_pass.set_viewport(
                 source.point.0 as f32,
                 source.point.1 as f32,
