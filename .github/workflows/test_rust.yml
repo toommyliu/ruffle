@@ -14,37 +14,19 @@ concurrency:
 env:
   FEATURES: lzma,jpegxr,imgtests
   TEST_OPTS: --workspace --locked --no-fail-fast -j 4
-  LINUX_DEPENDENCIES: mesa-vulkan-drivers libasound2-dev libudev-dev libfontconfig-dev libfreetype6-dev
   CARGO_INCREMENTAL: '1'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-  RUSTUP_WINDOWS_PATH_ADD_BIN: '1'
-  XDG_RUNTIME_DIR: ''
 
 jobs:
   build:
-    name: Test Rust / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
+    name: Test Rust / macos-15
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt install -y ${{ env.LINUX_DEPENDENCIES }}
-
-      - name: Enable freetype tests
-        if: runner.os == 'Linux'
-        shell: bash
-        run: echo FEATURES=${FEATURES},freetype | tee -a $GITHUB_ENV
 
       - name: Cache Cargo output
         uses: Swatinem/rust-cache@v2
@@ -67,7 +49,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: swf_images_${{ matrix.os }}
+          name: swf_images_macos-15
           path: |
             tests*/**/*.actual*.png
             tests*/**/*.difference*.png
