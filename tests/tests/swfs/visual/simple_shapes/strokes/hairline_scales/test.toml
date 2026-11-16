@@ -1,0 +1,8 @@
+num_frames = 1
+
+# Hairline squares, each shape drawn first at one scale and then at another.
+# The expected image is from Flash Player 32 (PPAPI) for macOS.
+[image_comparisons.output]
+
+[player_options]
+with_renderer = { optional = true }

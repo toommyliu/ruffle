@@ -160,8 +160,6 @@ impl ShapeTessellator {
             }
             self.is_stroke = next_is_stroke;
 
-            let mut buffers_builder =
-                BuffersBuilder::new(&mut self.lyon_mesh, RuffleVertexCtor { color });
             let result = match path {
                 DrawPath::Fill { winding_rule, .. } => {
                     // Larger scales require more precise tessellation to avoid artifacts
@@ -171,24 +169,24 @@ impl ShapeTessellator {
                         &FillOptions::default()
                             .with_fill_rule(winding_rule.into())
                             .with_tolerance(tolerance),
-                        &mut buffers_builder,
+                        &mut BuffersBuilder::new(&mut self.lyon_mesh, FillVertexCtor { color }),
                     )
                 }
                 DrawPath::Stroke { style, .. } => {
-                    // This calculation ensures that hairline strokes are rendered with
-                    // a minimum width of 1 pixel, while still allowing for proper scaling
                     let width = style.width().to_pixels() as f32;
-                    let min_screen_width = if f32::abs(scale) > TESSELLATION_EPSILON {
+                    let pixel = if f32::abs(scale) > TESSELLATION_EPSILON {
                         1.0 / scale
                     } else {
                         1.0
                     };
-                    let width = width.max(min_screen_width);
+                    // lyon divides by the half width to find normals, so a hairline is laid
+                    // out a pixel wide and its vertices are moved back to its true width.
+                    let layout_width = width.max(pixel);
 
                     // Larger scales require more precise tessellation to avoid artifacts
                     let tolerance = StrokeOptions::DEFAULT_TOLERANCE / scale;
                     let mut stroke_options = StrokeOptions::default()
-                        .with_line_width(width)
+                        .with_line_width(layout_width)
                         .with_tolerance(tolerance)
                         .with_start_cap(match style.start_cap() {
                             swf::LineCapStyle::None => tessellation::LineCap::Butt,
@@ -219,7 +217,13 @@ impl ShapeTessellator {
                     self.stroke_tess.tessellate_path(
                         &lyon_path,
                         &stroke_options,
-                        &mut buffers_builder,
+                        &mut BuffersBuilder::new(
+                            &mut self.lyon_mesh,
+                            StrokeVertexCtor {
+                                color,
+                                half_width: width / 2.0,
+                            },
+                        ),
                     )
                 }
             };
@@ -318,6 +322,16 @@ pub struct Vertex {
     pub x: f32,
     pub y: f32,
     pub color: swf::Color,
+    pub stroke: StrokeExtent,
+}
+
+/// Zero for fills. A stroke vertex sits `normal * half_width` from its path, and
+/// `normal` is longer than 1 at joins. A renderer moves it further along
+/// `normal` to keep the stroke visible at the size it's drawn.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StrokeExtent {
+    pub normal: [f32; 2],
+    pub half_width: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -448,26 +462,38 @@ fn swf_gradient_to_uniforms(
     }
 }
 
-struct RuffleVertexCtor {
+struct FillVertexCtor {
     color: swf::Color,
 }
 
-impl FillVertexConstructor<Vertex> for RuffleVertexCtor {
+impl FillVertexConstructor<Vertex> for FillVertexCtor {
     fn new_vertex(&mut self, vertex: FillVertex) -> Vertex {
         Vertex {
             x: vertex.position().x,
             y: vertex.position().y,
             color: self.color,
+            stroke: StrokeExtent::default(),
         }
     }
 }
 
-impl StrokeVertexConstructor<Vertex> for RuffleVertexCtor {
+struct StrokeVertexCtor {
+    color: swf::Color,
+    half_width: f32,
+}
+
+impl StrokeVertexConstructor<Vertex> for StrokeVertexCtor {
     fn new_vertex(&mut self, vertex: StrokeVertex) -> Vertex {
+        let normal = vertex.normal();
+        let position = vertex.position_on_path() + normal * self.half_width;
         Vertex {
-            x: vertex.position().x,
-            y: vertex.position().y,
+            x: position.x,
+            y: position.y,
             color: self.color,
+            stroke: StrokeExtent {
+                normal: [normal.x, normal.y],
+                half_width: self.half_width,
+            },
         }
     }
 }

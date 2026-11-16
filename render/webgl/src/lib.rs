@@ -98,10 +98,13 @@ struct Vertex {
     color: u32,
 }
 
-impl From<TessVertex> for Vertex {
-    fn from(vertex: TessVertex) -> Self {
+impl Vertex {
+    fn new(vertex: TessVertex, scale: f32) -> Self {
+        let [nx, ny] = vertex.stroke.normal;
+        let min_half_width = 0.5 / scale.max(f32::EPSILON);
+        let widen = (min_half_width - vertex.stroke.half_width).max(0.0);
         Self {
-            position: [vertex.x, vertex.y],
+            position: [vertex.x + nx * widen, vertex.y + ny * widen],
             color: u32::from_le_bytes([
                 vertex.color.r,
                 vertex.color.g,
@@ -584,7 +587,11 @@ impl WebGlRenderBackend {
             let vertex_buffer = self.gl.create_buffer().ok_or(Error::UnableToCreateBuffer)?;
             self.gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&vertex_buffer));
 
-            let vertices: Vec<_> = draw.vertices.into_iter().map(Vertex::from).collect();
+            let vertices: Vec<_> = draw
+                .vertices
+                .into_iter()
+                .map(|vertex| Vertex::new(vertex, scale))
+                .collect();
             self.gl.buffer_data_with_u8_array(
                 Gl::ARRAY_BUFFER,
                 bytemuck::cast_slice(&vertices),

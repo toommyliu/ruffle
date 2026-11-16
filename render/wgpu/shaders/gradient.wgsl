@@ -22,8 +22,8 @@ struct Gradient {
 
 @vertex
 fn main_vertex(in: common__VertexInputUv, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
-    let pos = common__globals.global_matrix * (transforms[instanceIndex].world_matrix * vec4<f32>(in.position.x, in.position.y, 0.0, 1.0));
-    return VertexOutput(pos, in.uv.xy / in.uv.z, transforms[instanceIndex].mult_color, transforms[instanceIndex].add_color);
+    let pos = common__place_vertex(in.position, in.stroke, transforms[instanceIndex].world_matrix);
+    return VertexOutput(pos, in.uv, transforms[instanceIndex].mult_color, transforms[instanceIndex].add_color);
 }
 
 fn find_t(uv: vec2<f32>) -> f32 {

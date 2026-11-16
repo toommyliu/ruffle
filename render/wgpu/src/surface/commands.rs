@@ -1612,10 +1612,10 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
                 region.y_max as f32 / texture.texture.height() as f32,
             );
             &[
-                PosUvVertex::new(0.0, 0.0, u0, v0, 1.0),
-                PosUvVertex::new(1.0, 0.0, u1, v0, 1.0),
-                PosUvVertex::new(1.0, 1.0, u1, v1, 1.0),
-                PosUvVertex::new(0.0, 1.0, u0, v1, 1.0),
+                PosUvVertex::new(0.0, 0.0, u0, v0),
+                PosUvVertex::new(1.0, 0.0, u1, v0),
+                PosUvVertex::new(1.0, 1.0, u1, v1),
+                PosUvVertex::new(0.0, 1.0, u0, v1),
             ]
         };
 
@@ -1904,10 +1904,10 @@ impl<'encoder, 'global: 'encoder> WgpuCommandHandler<'encoder, 'global> {
             (y + rect.height) as f32 / height as f32,
         );
         let vertices = [
-            PosUvVertex::new(0.0, 0.0, u0, v0, 1.0),
-            PosUvVertex::new(1.0, 0.0, u1, v0, 1.0),
-            PosUvVertex::new(1.0, 1.0, u1, v1, 1.0),
-            PosUvVertex::new(0.0, 1.0, u0, v1, 1.0),
+            PosUvVertex::new(0.0, 0.0, u0, v0),
+            PosUvVertex::new(1.0, 0.0, u1, v0),
+            PosUvVertex::new(1.0, 1.0, u1, v1),
+            PosUvVertex::new(0.0, 1.0, u0, v1),
         ];
         let reads_below = self.reads_below(blend);
         if let (true, Some(block)) = (reads_below, &mut self.masked) {

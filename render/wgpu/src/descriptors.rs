@@ -272,37 +272,45 @@ impl Quad {
         let vertices_pos_uv = [
             PosUvVertex {
                 position: [0.0, 0.0],
-                uv: [0.0, 0.0, 1.0],
+                uv: [0.0, 0.0],
+                stroke: Default::default(),
             },
             PosUvVertex {
                 position: [1.0, 0.0],
-                uv: [1.0, 0.0, 1.0],
+                uv: [1.0, 0.0],
+                stroke: Default::default(),
             },
             PosUvVertex {
                 position: [1.0, 1.0],
-                uv: [1.0, 1.0, 1.0],
+                uv: [1.0, 1.0],
+                stroke: Default::default(),
             },
             PosUvVertex {
                 position: [0.0, 1.0],
-                uv: [0.0, 1.0, 1.0],
+                uv: [0.0, 1.0],
+                stroke: Default::default(),
             },
         ];
         let vertices_pos_color = [
             PosColorVertex {
                 position: [0.0, 0.0],
                 color: [255, 255, 255, 255],
+                stroke: Default::default(),
             },
             PosColorVertex {
                 position: [1.0, 0.0],
                 color: [255, 255, 255, 255],
+                stroke: Default::default(),
             },
             PosColorVertex {
                 position: [1.0, 1.0],
                 color: [255, 255, 255, 255],
+                stroke: Default::default(),
             },
             PosColorVertex {
                 position: [0.0, 1.0],
                 color: [255, 255, 255, 255],
+                stroke: Default::default(),
             },
         ];
         let filter_vertices = [

@@ -18,6 +18,7 @@ bytemuck = { workspace = true, features = ["derive"] }
 clap = { workspace = true, optional = true }
 enum-map = { workspace = true }
 fnv = { workspace = true }
+half = "2.7.1"
 swf = { path = "../../swf" }
 image = { workspace = true }
 naga-agal = { path = "../naga-agal" }

@@ -13,7 +13,7 @@ struct VertexOutput {
 @vertex
 fn main_vertex(in: common__VertexInputUv) -> VertexOutput {
     let pos = vec4<f32>((in.position.x * 2.0) - 1.0, -(in.position.y * 2.0) + 1.0, 0.0, 1.0);
-    return VertexOutput(pos, in.uv.xy / in.uv.z);
+    return VertexOutput(pos, in.uv);
 }
 
 @fragment

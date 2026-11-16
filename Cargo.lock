@@ -5101,6 +5101,7 @@ dependencies = [
  "enum-map",
  "fnv",
  "futures",
+ "half",
  "image",
  "indexmap",
  "lru",

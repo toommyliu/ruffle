@@ -1854,7 +1854,7 @@ pub struct ActiveFrame {
 
 /// A multiple of every mesh vertex's size, so that each draw's vertices start
 /// a whole number of vertices into their buffer.
-const MESH_VERTEX_ALIGNMENT: wgpu::BufferAddress = 60;
+const MESH_VERTEX_ALIGNMENT: wgpu::BufferAddress = 80;
 const _: () = assert!(
     MESH_VERTEX_ALIGNMENT.is_multiple_of(size_of::<PosColorVertex>() as u64)
         && MESH_VERTEX_ALIGNMENT.is_multiple_of(size_of::<PosUvVertex>() as u64)

@@ -28,11 +28,23 @@ struct common__VertexInput {
 
 struct common__VertexInputUv {
     @location(0) position: vec2<f32>,
-    @location(1) uv: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) stroke: u32,
 };
 
 /// Common uniform layout shared by all shaders.
 @group(0) @binding(0) var<uniform> common__globals: common__Globals;
+
+/// Places a vertex in the target, moving stroke vertices out along their
+/// normal so that strokes are at least a pixel wide.
+fn common__place_vertex(position: vec2<f32>, stroke: u32, world_matrix: mat4x4<f32>) -> vec4<f32> {
+    let normal = vec2<f32>(f32(bitcast<i32>(stroke << 24u) >> 24u), f32(bitcast<i32>(stroke << 16u) >> 24u)) / 32.0;
+    let half_width = unpack2x16float(stroke).y;
+    let pixels = length((world_matrix * vec4<f32>(normal, 0.0, 0.0)).xy);
+    let min_half_width = 0.5 * length(normal) / max(pixels, 1e-6);
+    let widened = position + normal * max(0.0, min_half_width - half_width);
+    return common__globals.global_matrix * (world_matrix * vec4<f32>(widened, 0.0, 1.0));
+}
 
 /// Converts a color from linear to sRGB color space.
 fn common__linear_to_srgb(linear_: vec4<f32>) -> vec4<f32> {

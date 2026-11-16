@@ -16,7 +16,7 @@ use enum_map::Enum;
 use ruffle_render::backend::RawTexture;
 use ruffle_render::bitmap::{BitmapHandle, BitmapHandleImpl, PixelRegion, SyncHandle};
 use ruffle_render::shape_utils::GradientType;
-use ruffle_render::tessellator::{Gradient as TessGradient, Vertex as TessVertex};
+use ruffle_render::tessellator::{Gradient as TessGradient, StrokeExtent, Vertex as TessVertex};
 use std::any::Any;
 use std::cell::{Cell, OnceCell};
 use std::sync::{Arc, Mutex};
@@ -96,27 +96,33 @@ impl From<TessVertex> for PosVertex {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct PosUvVertex {
     position: [f32; 2],
-    uv: [f32; 3],
+    uv: [f32; 2],
+    stroke: StrokeAttribute,
 }
 
 impl PosUvVertex {
-    pub fn new(x: f32, y: f32, u: f32, v: f32, t: f32) -> Self {
-        let position = [x, y];
-        let uv = [u, v, t];
-        Self { position, uv }
+    pub fn new(x: f32, y: f32, u: f32, v: f32) -> Self {
+        Self {
+            position: [x, y],
+            uv: [u, v],
+            stroke: StrokeAttribute::default(),
+        }
     }
 
     pub fn from_tessellator(vertex: TessVertex, texture_matrix: &[[f32; 3]; 3]) -> Self {
         let position = [vertex.x, vertex.y];
         let uv = Self::transform_uv(texture_matrix, vertex.x, vertex.y);
-        Self { position, uv }
+        Self {
+            position,
+            uv,
+            stroke: StrokeAttribute::from(vertex.stroke),
+        }
     }
 
-    fn transform_uv(matrix: &[[f32; 3]; 3], x: f32, y: f32) -> [f32; 3] {
+    fn transform_uv(matrix: &[[f32; 3]; 3], x: f32, y: f32) -> [f32; 2] {
         [
             matrix[0][0] * x + matrix[1][0] * y + matrix[2][0],
             matrix[0][1] * x + matrix[1][1] * y + matrix[2][1],
-            1.0,
         ]
     }
 }
@@ -126,6 +132,7 @@ impl PosUvVertex {
 struct PosColorVertex {
     position: [f32; 2],
     color: [u8; 4],
+    stroke: StrokeAttribute,
 }
 
 impl From<TessVertex> for PosColorVertex {
@@ -138,7 +145,25 @@ impl From<TessVertex> for PosColorVertex {
                 vertex.color.b,
                 vertex.color.a,
             ],
+            stroke: StrokeAttribute::from(vertex.stroke),
         }
+    }
+}
+
+/// A `StrokeExtent` packed into a `Uint32`, unpacked by `common__place_vertex`:
+/// the normal in 32nds as two `i8`s, then the half width as an `f16`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+struct StrokeAttribute(u32);
+
+impl From<StrokeExtent> for StrokeAttribute {
+    fn from(stroke: StrokeExtent) -> Self {
+        const STEPS: f32 = 32.0;
+        let [x, y] = stroke.normal;
+        let fit = (f32::from(i8::MAX) / STEPS / x.hypot(y)).min(1.0);
+        let step = |value: f32| u32::from((value * fit * STEPS).round() as i8 as u8);
+        let half_width = u32::from(half::f16::from_f32(stroke.half_width).to_bits());
+        Self(step(x) | step(y) << 8 | half_width << 16)
     }
 }
 
