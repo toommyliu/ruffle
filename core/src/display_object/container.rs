@@ -30,6 +30,9 @@ pub fn dispatch_removed_from_stage_event<'gc>(
     child: DisplayObject<'gc>,
     context: &mut UpdateContext<'gc>,
 ) {
+    if let Some(cache) = &*child.base().bitmap_cache_mut() {
+        context.library.cache_textures_mut().release(&cache.texture);
+    }
     if let Some(object) = child.object2() {
         let removed_evt = Avm2EventObject::bare_default_event(context, "removedFromStage");
         Avm2::dispatch_event(context, removed_evt, object.into());

@@ -22,6 +22,7 @@ impl<T> Default for Expiring<T> {
 
 pub struct ExpiringValues<T> {
     values: Vec<Weak<Expiring<T>>>,
+    released: Vec<(Weak<Expiring<T>>, u32)>,
     frame: u32,
 }
 
@@ -29,6 +30,7 @@ impl<T> Default for ExpiringValues<T> {
     fn default() -> Self {
         Self {
             values: Vec::new(),
+            released: Vec::new(),
             frame: 0,
         }
     }
@@ -45,7 +47,20 @@ impl<T> ExpiringValues<T> {
         }
     }
 
+    pub fn release(&mut self, value: &Rc<Expiring<T>>) {
+        if value.value.borrow().is_some() {
+            self.released.push((Rc::downgrade(value), self.frame));
+        }
+    }
+
     pub fn end_frame(&mut self) {
+        for (value, frame) in self.released.drain(..) {
+            if let Some(value) = value.upgrade()
+                && value.last_used.get() != frame
+            {
+                value.value.take();
+            }
+        }
         self.frame = self.frame.wrapping_add(1);
         if self.frame.is_multiple_of(Self::SWEEP_INTERVAL) {
             self.retain_used_within(Self::MAX_IDLE_FRAMES);
