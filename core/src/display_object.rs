@@ -203,7 +203,10 @@ impl BitmapCache {
             && let Some(actual_height) = NonZero::new(actual_height)
             && acceptable_size
         {
-            let (texture_width, texture_height) = if exact_size {
+            let grew = self.texture.value.borrow().is_some()
+                && (actual_width.get() > self.texture_width
+                    || actual_height.get() > self.texture_height);
+            let (texture_width, texture_height) = if exact_size || !grew {
                 (actual_width.get(), actual_height.get())
             } else {
                 texture_size(actual_width.get(), actual_height.get())
