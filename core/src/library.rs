@@ -798,8 +798,14 @@ impl<'gc> Library<'gc> {
     ) {
         match definition {
             FontDefinition::SwfTag(tag, encoding) => {
-                let font =
-                    Font::from_swf_tag(gc_context, renderer, tag, encoding, FontType::Device);
+                let font = Font::from_swf_tag(
+                    gc_context,
+                    renderer,
+                    tag,
+                    vec![],
+                    encoding,
+                    FontType::Device,
+                );
                 let name = font.descriptor().name().to_owned();
                 let is_bold = font.descriptor().bold();
                 let is_italic = font.descriptor().italic();

@@ -2,10 +2,11 @@ use crate::context::RenderContext;
 use crate::drawing::Drawing;
 use crate::font::FontAtlasGlyph;
 use crate::prelude::*;
+use crate::tag_utils::SwfSlice;
 use ruffle_render::backend::null::NullBitmapSource;
 use ruffle_render::backend::{RenderBackend, ShapeHandle};
 use ruffle_render::transform::Transform;
-use std::cell::{Ref, RefCell};
+use std::cell::{OnceCell, Ref, RefCell};
 
 #[derive(Debug, Clone)]
 enum SwfGlyphOrShape {
@@ -52,9 +53,38 @@ impl GlyphRenderData {
     }
 }
 
+/// A DefineFont2 or DefineFont3 glyph, decoded only to tessellate or hit-test
+/// it: decoded records take several times the size of their tag data.
+#[derive(Debug, Clone)]
+struct EncodedGlyph {
+    shape: SwfSlice,
+    bounds: Option<Rectangle<Twips>>,
+    handle: OnceCell<ShapeHandle>,
+}
+
+impl EncodedGlyph {
+    fn decode(&self) -> swf::Shape {
+        let shape_records = self
+            .shape
+            .read_from(0)
+            .read_glyph_shape()
+            .unwrap_or_else(|error| {
+                tracing::error!("Glyph no longer decodes: {error}");
+                Vec::new()
+            });
+        ruffle_render::shape_utils::swf_glyph_to_shape(swf::Glyph {
+            shape_records,
+            code: 0,
+            advance: 0,
+            bounds: self.bounds,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 enum GlyphShape {
     Swf(Box<RefCell<SwfGlyphOrShape>>),
+    Encoded(Box<EncodedGlyph>),
     Drawing(Box<Drawing>),
     AtlasGlyph(FontAtlasGlyph),
     None,
@@ -68,6 +98,17 @@ impl GlyphShape {
                 let (shape, _) = glyph.shape();
                 shape.shape_bounds.contains(point)
                     && ruffle_render::shape_utils::shape_hit_test(shape, point, local_matrix)
+            }
+            GlyphShape::Encoded(glyph) => {
+                if let Some(bounds) = glyph.bounds
+                    && (bounds.x_min != bounds.x_max || bounds.y_min != bounds.y_max)
+                    && !bounds.contains(point)
+                {
+                    return false;
+                }
+                let shape = glyph.decode();
+                shape.shape_bounds.contains(point)
+                    && ruffle_render::shape_utils::shape_hit_test(&shape, point, local_matrix)
             }
             GlyphShape::Drawing(drawing) => drawing.hit_test(point, local_matrix),
             GlyphShape::AtlasGlyph(_) => {
@@ -88,6 +129,14 @@ impl GlyphShape {
                 });
                 handle.clone().map(GlyphRenderData::from_shape)
             }
+            GlyphShape::Encoded(glyph) => Some(GlyphRenderData::from_shape(
+                glyph
+                    .handle
+                    .get_or_init(|| {
+                        renderer.register_shape((&glyph.decode()).into(), &NullBitmapSource)
+                    })
+                    .clone(),
+            )),
             GlyphShape::Drawing(drawing) => drawing
                 .register_or_replace(renderer)
                 .map(GlyphRenderData::from_shape),
@@ -143,6 +192,18 @@ impl Glyph {
         }
     }
 
+    pub fn from_swf_shape(character: char, swf_glyph: &swf::Glyph, shape: SwfSlice) -> Self {
+        Self {
+            advance: Twips::new(swf_glyph.advance.into()),
+            shape: GlyphShape::Encoded(Box::new(EncodedGlyph {
+                shape,
+                bounds: swf_glyph.bounds,
+                handle: OnceCell::new(),
+            })),
+            character,
+        }
+    }
+
     pub fn from_atlas(character: char, atlas_glyph: FontAtlasGlyph, advance: Twips) -> Self {
         Self {
             shape: GlyphShape::AtlasGlyph(atlas_glyph),
@@ -174,6 +235,7 @@ impl Glyph {
     pub fn rendered_at_baseline(&self) -> bool {
         match self.shape {
             GlyphShape::Swf(_) => true,
+            GlyphShape::Encoded(_) => true,
             GlyphShape::Drawing(_) => true,
             GlyphShape::AtlasGlyph(_) => false,
             GlyphShape::None => false,

@@ -3916,6 +3916,7 @@ impl<'gc, 'a> MovieClipShared<'gc> {
             context.gc(),
             context.renderer,
             font,
+            vec![],
             reader.encoding(),
             FontType::Embedded,
         );
@@ -3930,12 +3931,16 @@ impl<'gc, 'a> MovieClipShared<'gc> {
         context: &mut UpdateContext<'gc>,
         reader: &mut SwfStream<'a>,
     ) -> Result<(), Error> {
-        let font = reader.read_define_font_2(2)?;
+        let (font, shapes) = reader.read_define_font_2_without_shapes(2)?;
         let font_id = font.id;
         let font_object = Font::from_swf_tag(
             context.gc(),
             context.renderer,
             font,
+            shapes
+                .into_iter()
+                .map(|shape| self.swf.to_subslice(shape))
+                .collect(),
             reader.encoding(),
             FontType::Embedded,
         );
@@ -3950,12 +3955,16 @@ impl<'gc, 'a> MovieClipShared<'gc> {
         context: &mut UpdateContext<'gc>,
         reader: &mut SwfStream<'a>,
     ) -> Result<(), Error> {
-        let font = reader.read_define_font_2(3)?;
+        let (font, shapes) = reader.read_define_font_2_without_shapes(3)?;
         let font_id = font.id;
         let font_object = Font::from_swf_tag(
             context.gc(),
             context.renderer,
             font,
+            shapes
+                .into_iter()
+                .map(|shape| self.swf.to_subslice(shape))
+                .collect(),
             reader.encoding(),
             FontType::Embedded,
         );

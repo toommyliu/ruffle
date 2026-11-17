@@ -995,6 +995,19 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_define_font_2(&mut self, version: u8) -> Result<Font<'a>> {
+        let (mut font, shapes) = self.read_define_font_2_without_shapes(version)?;
+        for (glyph, shape) in font.glyphs.iter_mut().zip(shapes) {
+            glyph.shape_records = Reader::new(shape, self.version).read_glyph_shape()?;
+        }
+        Ok(font)
+    }
+
+    /// Reads a DefineFont2 or DefineFont3 tag with empty `shape_records`, and
+    /// returns the data each glyph's shape starts at, for `read_glyph_shape`.
+    pub fn read_define_font_2_without_shapes(
+        &mut self,
+        version: u8,
+    ) -> Result<(Font<'a>, Vec<&'a [u8]>)> {
         let id = self.read_character_id()?;
         let flags = FontFlag::from_bits_truncate(self.read_u8()?);
         let language = self.read_language()?;
@@ -1012,6 +1025,7 @@ impl<'a> Reader<'a> {
             };
             num_glyphs
         ];
+        let mut shapes = Vec::with_capacity(num_glyphs);
 
         // SWF19 p. 164 doesn't make it super clear: If there are no glyphs,
         // then the following tables are omitted. But the table offset values
@@ -1046,21 +1060,9 @@ impl<'a> Reader<'a> {
             };
 
             // GlyphShapeTable
-            for (i, glyph) in glyphs.iter_mut().enumerate() {
-                self.seek_absolute(offsets_ref, offsets[i] as usize);
-
-                let num_bits = self.read_u8()?;
-                let mut shape_context = ShapeContext {
-                    swf_version: self.version,
-                    shape_version: 1,
-                    num_fill_bits: num_bits >> 4,
-                    num_line_bits: num_bits & 0b1111,
-                };
-
-                let mut bits = self.bits();
-                while let Some(record) = Self::read_shape_record(&mut bits, &mut shape_context)? {
-                    glyph.shape_records.push(record);
-                }
+            for offset in offsets {
+                let offset = (offset as usize).min(offsets_ref.len());
+                shapes.push(&offsets_ref[offset..]);
             }
 
             self.seek_absolute(offsets_ref, code_table_offset as usize);
@@ -1115,15 +1117,35 @@ impl<'a> Reader<'a> {
             None
         };
 
-        Ok(Font {
-            version,
-            id,
-            name,
-            language,
-            layout,
-            glyphs,
-            flags,
-        })
+        Ok((
+            Font {
+                version,
+                id,
+                name,
+                language,
+                layout,
+                glyphs,
+                flags,
+            },
+            shapes,
+        ))
+    }
+
+    /// Reads one glyph's shape from a DefineFont2 or DefineFont3 glyph table.
+    pub fn read_glyph_shape(&mut self) -> Result<Vec<ShapeRecord>> {
+        let num_bits = self.read_u8()?;
+        let mut shape_context = ShapeContext {
+            swf_version: self.version,
+            shape_version: 1,
+            num_fill_bits: num_bits >> 4,
+            num_line_bits: num_bits & 0b1111,
+        };
+        let mut bits = self.bits();
+        let mut records = Vec::new();
+        while let Some(record) = Self::read_shape_record(&mut bits, &mut shape_context)? {
+            records.push(record);
+        }
+        Ok(records)
     }
 
     pub fn read_define_font_4(&mut self) -> Result<Font4<'a>> {

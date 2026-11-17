@@ -20,6 +20,7 @@ pub use text_render_settings::TextRenderSettings;
 use crate::font::glyph::GlyphRef;
 use crate::prelude::*;
 use crate::string::WStr;
+use crate::tag_utils::SwfSlice;
 use gc_arena::{Collect, Gc, Mutation};
 use ruffle_render::backend::RenderBackend;
 use std::hash::{Hash, Hasher};
@@ -350,9 +351,11 @@ impl<'gc> Font<'gc> {
         gc_context: &Mutation<'gc>,
         renderer: &mut dyn RenderBackend,
         tag: swf::Font,
+        shapes: Vec<SwfSlice>,
         encoding: &'static swf::Encoding,
         font_type: FontType,
     ) -> Font<'gc> {
+        let mut shapes = shapes.into_iter();
         let mut code_point_to_glyph = fnv::FnvHashMap::default();
 
         let descriptor = FontDescriptor::from_swf_tag(&tag, encoding);
@@ -373,7 +376,10 @@ impl<'gc> Font<'gc> {
                 let character = char::from_u32(code as u32).unwrap_or(char::REPLACEMENT_CHARACTER);
                 code_point_to_glyph.insert(code, index);
 
-                let glyph = Glyph::from_swf(character, swf_glyph);
+                let glyph = match shapes.next() {
+                    Some(shape) => Glyph::from_swf_shape(character, &swf_glyph, shape),
+                    None => Glyph::from_swf(character, swf_glyph),
+                };
 
                 // Eager-load ASCII characters.
                 if code < 128 {
