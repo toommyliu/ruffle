@@ -2113,6 +2113,16 @@ impl Player {
 
     #[instrument(level = "debug", skip_all)]
     pub fn run_frame(&mut self) {
+        if std::mem::take(&mut self.gc_requested)
+            && self
+                .last_requested_gc
+                .is_none_or(|at| at.elapsed() >= MIN_REQUESTED_GC_INTERVAL)
+        {
+            self.last_requested_gc = Some(Instant::now());
+            collect_all_garbage(&mut self.gc_arena.borrow_mut());
+            self.unregister_freed_sounds();
+        }
+
         let frame_time = self.frame_time(750_000_000.0);
         let frame_time = Duration::from_nanos(frame_time as u64);
         let (mut execution_limit, may_execute_while_streaming) = match self.load_behavior {
@@ -2568,17 +2578,7 @@ impl Player {
         });
         self.update_mouse_state(EnumSet::empty(), false, &mut false);
 
-        // GC
-        if std::mem::take(&mut self.gc_requested)
-            && self
-                .last_requested_gc
-                .is_none_or(|at| at.elapsed() >= MIN_REQUESTED_GC_INTERVAL)
-        {
-            self.last_requested_gc = Some(Instant::now());
-            collect_all_garbage(&mut self.gc_arena.borrow_mut());
-        } else {
-            collect_garbage(&mut self.gc_arena.borrow_mut(), false);
-        }
+        collect_garbage(&mut self.gc_arena.borrow_mut(), false);
         self.unregister_freed_sounds();
 
         rval
