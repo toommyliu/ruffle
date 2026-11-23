@@ -32,6 +32,7 @@ use clap::Parser;
 use cli::Opt;
 use rfd::MessageDialogResult;
 use ruffle_core::StaticCallstack;
+use ruffle_core::backend::navigator::SocketMode;
 use std::cell::RefCell;
 use std::env;
 use std::fs::File;
@@ -159,6 +160,7 @@ fn main() -> Result<(), Error> {
     if opt.movie_url.is_none() {
         opt.movie_url = Some(Url::parse(AQW_LOADER_URL)?);
         opt.no_gui = true;
+        opt.tcp_connections.get_or_insert(SocketMode::Allow);
     }
 
     #[cfg(feature = "shell-completions")]
