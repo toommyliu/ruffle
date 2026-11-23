@@ -1,28 +1,13 @@
 # ruffle
 
-Experimental patches for [Ruffle](https://github.com/ruffle-rs/ruffle) that make AdventureQuest Worlds run noticeably smoother.
+Experimental patches for [Ruffle](https://github.com/ruffle-rs/ruffle) that make AdventureQuest Worlds run noticeably smoother on Apple Silicon Macs.
 
-> [!NOTE]
-> These patches target Ruffle's desktop player and can also affect the web player. They've only been tested on a few hardware setups, so on others they may run slower, look wrong or not work at all.
-
-Based on upstream [`e2643c2d1`](https://github.com/ruffle-rs/ruffle/commit/e2643c2d1); `git log e2643c2d1..` lists the patches.
+It is intentionally time-frozen at upstream [`e2643c2d1`](https://github.com/ruffle-rs/ruffle/commit/e2643c2d1) from 2026-09-26. There is no good reason to pull in every upstream release.
 
 ## Building
 
-You need Rust (stable) with the WebAssembly target, `wasm-bindgen-cli` at the exact version Ruffle uses, Java (for the ActionScript compiler), and Node.js 24 with npm. Binaryen's `wasm-opt` is optional and makes the wasm smaller.
+You need Rust (stable) and Java, for the ActionScript compiler.
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.127
+cargo build --release -p ruffle_desktop
 ```
-
-The web build, for a page or an Electron app:
-
-```bash
-cd web
-npm install
-npm run build --workspace=ruffle-core
-npm run build --workspace=ruffle-selfhosted
-```
-
-It lands in `web/packages/selfhosted/dist`. The desktop player is `cargo build --release -p ruffle_desktop`.
