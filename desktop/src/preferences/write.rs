@@ -55,6 +55,13 @@ impl<'a> PreferencesWriter<'a> {
         })
     }
 
+    pub fn set_smooth_motion(&mut self, smooth_motion: bool) {
+        self.0.edit(|values, toml_document| {
+            toml_document["smooth_motion"] = value(smooth_motion);
+            values.smooth_motion = smooth_motion;
+        })
+    }
+
     pub fn set_mute(&mut self, mute: bool) {
         self.0.edit(|values, toml_document| {
             toml_document["mute"] = value(mute);
@@ -231,6 +238,15 @@ mod tests {
     #[test]
     fn set_volume() {
         test("", |writer| writer.set_volume(0.5), "volume = 0.5\n");
+    }
+
+    #[test]
+    fn set_smooth_motion() {
+        test(
+            "",
+            |writer| writer.set_smooth_motion(true),
+            "smooth_motion = true\n",
+        );
     }
 
     #[test]

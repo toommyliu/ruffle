@@ -51,6 +51,10 @@ pub fn read_preferences(input: &str) -> ParseDetails<SavedGlobalPreferences> {
         result.mute = value;
     };
 
+    if let Some(value) = document.get_bool(&mut cx, "smooth_motion") {
+        result.smooth_motion = value;
+    };
+
     if let Some(value) = document.get_bool(&mut cx, "enable_openh264") {
         result.enable_openh264 = value;
     };
@@ -275,6 +279,19 @@ mod tests {
             }],
             result.warnings
         );
+    }
+
+    #[test]
+    fn smooth_motion() {
+        let result = read_preferences("smooth_motion = true");
+        assert_eq!(
+            &SavedGlobalPreferences {
+                smooth_motion: true,
+                ..Default::default()
+            },
+            result.values()
+        );
+        assert_eq!(Vec::<ParseWarning>::new(), result.warnings);
     }
 
     #[test]

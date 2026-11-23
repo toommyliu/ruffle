@@ -131,10 +131,27 @@ impl RuffleGui {
                 }
             }
 
-            if let Some(context_menu) = &mut self.context_menu
-                && !context_menu.show(&locale, egui_ctx, &self.event_loop, player.is_fullscreen())
-            {
-                self.close_context_menu(player);
+            if let Some(context_menu) = &mut self.context_menu {
+                let mut smooth_motion = player.frame_interpolation();
+                let keep_open = context_menu.show(
+                    &locale,
+                    egui_ctx,
+                    &self.event_loop,
+                    player.is_fullscreen(),
+                    &mut smooth_motion,
+                );
+                if smooth_motion != player.frame_interpolation() {
+                    player.set_frame_interpolation(smooth_motion);
+                    if let Err(e) = self
+                        .preferences
+                        .write_preferences(|writer| writer.set_smooth_motion(smooth_motion))
+                    {
+                        tracing::warn!("Couldn't save Smooth Motion: {e}");
+                    }
+                }
+                if !keep_open {
+                    self.close_context_menu(player);
+                }
             }
         };
     }
@@ -144,9 +161,7 @@ impl RuffleGui {
         menu: Vec<ruffle_core::ContextMenuItem>,
         close_event: PlayerEvent,
     ) {
-        if !menu.is_empty() {
-            self.context_menu = Some(ContextMenu::new(menu, close_event));
-        }
+        self.context_menu = Some(ContextMenu::new(menu, close_event));
     }
 
     pub fn close_context_menu(&mut self, player: &mut Player) {

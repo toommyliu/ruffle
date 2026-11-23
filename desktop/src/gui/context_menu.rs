@@ -34,6 +34,7 @@ impl ContextMenu {
         egui_ctx: &egui::Context,
         event_loop: &EventLoopProxy<RuffleEvent>,
         fullscreen: bool,
+        smooth_motion: &mut bool,
     ) -> bool {
         let mut item_clicked = false;
         self.position = self.position.or(egui_ctx.pointer_latest_pos());
@@ -65,6 +66,16 @@ impl ContextMenu {
                                     event_loop.send_event(RuffleEvent::ContextMenuItemClicked(i));
                                 item_clicked = true;
                             }
+                        }
+
+                        if !self.items.is_empty() {
+                            ui.separator();
+                        }
+                        if Checkbox::new(smooth_motion, text(locale, "context-menu-smooth-motion"))
+                            .ui(ui)
+                            .clicked()
+                        {
+                            item_clicked = true;
                         }
 
                         if fullscreen {

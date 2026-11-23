@@ -129,6 +129,7 @@ impl ActivePlayer {
         file_picker: FilePicker,
     ) -> Self {
         let player_id = PlayerId::new();
+        let smooth_motion = preferences.smooth_motion();
         let mut builder = PlayerBuilder::new();
 
         match CpalAudioBackend::new(preferences.output_device_name().as_deref()) {
@@ -365,6 +366,7 @@ impl ActivePlayer {
             CALLSTACK.with(|callstack| {
                 *callstack.borrow_mut() = Some(player_lock.callstack());
             });
+            player_lock.set_frame_interpolation(smooth_motion);
             player_lock.fetch_root_movie(
                 movie_url.to_string(),
                 opt.player.parameters.to_owned(),

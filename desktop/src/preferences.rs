@@ -152,6 +152,13 @@ impl GlobalPreferences {
             .mute
     }
 
+    pub fn smooth_motion(&self) -> bool {
+        self.preferences
+            .lock()
+            .expect("Preferences is not reentrant")
+            .smooth_motion
+    }
+
     pub fn preferred_volume(&self) -> f32 {
         self.cli.volume.unwrap_or_else(|| {
             self.preferences
@@ -287,6 +294,7 @@ pub struct SavedGlobalPreferences {
     pub language: LanguageIdentifier,
     pub output_device: Option<String>,
     pub mute: bool,
+    pub smooth_motion: bool,
     pub volume: f32,
     pub enable_openh264: bool,
     pub recent_limit: usize,
@@ -312,6 +320,7 @@ impl Default for SavedGlobalPreferences {
             language: locale,
             output_device: None,
             mute: false,
+            smooth_motion: false,
             volume: 1.0,
             enable_openh264: true,
             recent_limit: 10,
