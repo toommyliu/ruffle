@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    branches: [desktop]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  release:
+    name: Release / macos-15
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo output
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release"
+
+      - name: Build
+        run: cargo build --release --locked -p ruffle_desktop --no-default-features --features software_video,external_video,lzma,freetype
+
+      - name: Bundle
+        run: |
+          cp -R desktop/packages/macOS Ruffle.app
+          mkdir Ruffle.app/Contents/MacOS Ruffle.app/Contents/Resources
+          cp target/release/ruffle_desktop Ruffle.app/Contents/MacOS/ruffle
+          xcrun actool --compile Ruffle.app/Contents/Resources desktop/assets/Assets.xcassets --minimum-deployment-target 11.0 --platform macosx --errors --include-all-app-icons
+          codesign --force --deep --sign - Ruffle.app
+          ditto -c -k --keepParent Ruffle.app "Ruffle-${GITHUB_SHA::9}.zip"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "aqw-${GITHUB_SHA::9}" "Ruffle-${GITHUB_SHA::9}.zip" --target "$GITHUB_SHA" --notes ""
