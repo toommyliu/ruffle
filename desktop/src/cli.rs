@@ -48,6 +48,7 @@ pub struct Opt {
     pub completions: Option<Shell>,
 
     /// Path or URL of a Flash movie (SWF) to play.
+    /// Without one, opens AdventureQuest Worlds with the menu bar hidden.
     #[clap(name = "FILE", value_parser(parse_movie_file_or_url))]
     pub movie_url: Option<Url>,
 

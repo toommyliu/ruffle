@@ -52,6 +52,8 @@ thread_local! {
 static GLOBAL: tracing_tracy::client::ProfiledAllocator<std::alloc::System> =
     tracing_tracy::client::ProfiledAllocator::new(std::alloc::System, 0);
 
+const AQW_LOADER_URL: &str = "https://game.aq.com/game/gamefiles/Loader4.swf?ver=a";
+
 static RUFFLE_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "-",
@@ -153,7 +155,11 @@ fn main() -> Result<(), Error> {
     #[cfg(windows)]
     let _console = windows::Console::attach();
 
-    let opt = Opt::parse();
+    let mut opt = Opt::parse();
+    if opt.movie_url.is_none() {
+        opt.movie_url = Some(Url::parse(AQW_LOADER_URL)?);
+        opt.no_gui = true;
+    }
 
     #[cfg(feature = "shell-completions")]
     if let Some(shell) = opt.completions {
