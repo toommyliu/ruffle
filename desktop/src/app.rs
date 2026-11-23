@@ -10,7 +10,7 @@ use anyhow::Error;
 use gilrs::{Event, EventType, Gilrs};
 use ruffle_core::FloatDuration;
 use ruffle_core::PlayerEvent;
-use ruffle_core::events::{ImeEvent, ImeNotification, PlayerNotification};
+use ruffle_core::events::{ImeEvent, ImeNotification, KeyDescriptor, PlayerNotification};
 use ruffle_core::swf::HeaderExt;
 use ruffle_frontend_utils::content::ContentDescriptor;
 use ruffle_render::backend::ViewportDimensions;
@@ -33,6 +33,7 @@ struct MainWindow {
     occluded: bool,
     mouse_pos: PhysicalPosition<f64>,
     modifiers: Modifiers,
+    held_keys: Vec<KeyDescriptor>,
     min_window_size: LogicalSize<u32>,
     max_window_size: PhysicalSize<u32>,
     no_gui: bool,
@@ -138,6 +139,9 @@ impl MainWindow {
                 self.player.handle_event(PlayerEvent::FocusGained);
             }
             WindowEvent::Focused(false) => {
+                for key in self.held_keys.drain(..) {
+                    self.player.handle_event(PlayerEvent::KeyUp { key });
+                }
                 self.player.handle_event(PlayerEvent::FocusLost);
             }
             WindowEvent::MouseInput { button, state, .. } => {
@@ -235,8 +239,14 @@ impl MainWindow {
                 }
 
                 let key = winit_input_to_ruffle_key_descriptor(&event);
+                let held = self.held_keys.iter().position(|held| {
+                    (held.physical_key, held.key_location) == (key.physical_key, key.key_location)
+                });
                 match event.state {
                     ElementState::Pressed => {
+                        if held.is_none() {
+                            self.held_keys.push(key);
+                        }
                         self.player.handle_event(PlayerEvent::KeyDown { key });
                         if let Some(control_code) =
                             winit_to_ruffle_text_control(&event, self.modifiers)
@@ -251,6 +261,9 @@ impl MainWindow {
                         }
                     }
                     ElementState::Released => {
+                        if let Some(index) = held {
+                            self.held_keys.swap_remove(index);
+                        }
                         self.player.handle_event(PlayerEvent::KeyUp { key });
                     }
                 };
@@ -579,6 +592,7 @@ impl ApplicationHandler<RuffleEvent> for App {
                 occluded: false,
                 mouse_pos: PhysicalPosition::new(0.0, 0.0),
                 modifiers: Modifiers::default(),
+                held_keys: Vec::new(),
                 time: Instant::now(),
                 next_frame_time: None,
                 event_loop_proxy,
