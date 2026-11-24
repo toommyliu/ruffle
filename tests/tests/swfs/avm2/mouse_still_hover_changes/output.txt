@@ -1,0 +1,20 @@
+frame 1
+frame 2
+frame 3
+frame 4
+rollOver on slider
+frame 5
+frame 6
+frame 7
+rollOut on slider
+frame 8
+frame 9
+rollOver on popup
+frame 10
+frame 11
+rollOut on popup
+frame 12
+timer shows popup
+rollOver on popup
+frame 13
+rollOut on popup

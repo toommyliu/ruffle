@@ -1,0 +1,48 @@
+[
+{
+"type": "MouseMove",
+"pos": [
+150,
+150
+]
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+},
+{
+"type": "Wait"
+}
+]
