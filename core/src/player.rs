@@ -433,6 +433,7 @@ pub struct Player {
 
     mouse_in_stage: bool,
     mouse_position: Point<Twips>,
+    hover_pick_due: bool,
 
     /// The current mouse cursor icon.
     mouse_cursor: MouseCursor,
@@ -1613,21 +1614,20 @@ impl Player {
         let mut new_cursor = self.mouse_cursor;
         let mut mouse_cursor_needs_check = self.mouse_cursor_needs_check;
         let mouse_in_stage = self.mouse_in_stage();
+        let is_mouse_idle = !is_mouse_moved && changed_mouse_buttons.is_empty();
+        let hover_pick_due = is_mouse_idle && std::mem::take(&mut self.hover_pick_due);
 
         // Determine the display object the mouse is hovering over.
         // Search through levels from top-to-bottom, returning the first display object that is under the mouse.
         let needs_render = self.mutate_with_update_context(|context| {
             // Objects may be hovered using Tab,
             // skip mouse hover when it's not necessary.
-            let mut skip_mouse_hover = !is_mouse_moved
-                && changed_mouse_buttons.is_empty()
-                && context.mouse_data.hovered.is_some();
+            let mut skip_mouse_hover = is_mouse_idle && context.mouse_data.hovered.is_some();
 
-            // Picking walks the whole stage. When the hover update is skipped,
-            // the result is only used if the hovered object has disappeared
-            // (see below), so an idle mouse doesn't need a pick every tick.
-            let needs_pick = !skip_mouse_hover
-                || context.mouse_data.hovered.is_some_and(|hovered| {
+            let needs_pick = match context.mouse_data.hovered {
+                _ if !is_mouse_idle => true,
+                None => hover_pick_due,
+                Some(hovered) => {
                     let hovered = hovered.as_displayobject();
                     !hovered.visible()
                         || if hovered.movie().is_action_script_3() {
@@ -1635,7 +1635,8 @@ impl Player {
                         } else {
                             hovered.avm1_removed()
                         }
-                });
+                }
+            };
             let new_over_object = if mouse_in_stage && needs_pick {
                 run_mouse_pick(context, true)
             } else {
@@ -2157,6 +2158,7 @@ impl Player {
             }
         });
 
+        self.hover_pick_due = true;
         self.needs_render = true;
     }
 
@@ -3260,6 +3262,7 @@ impl PlayerBuilder {
                 input: InputManager::new(self.gamepad_button_mapping),
                 mouse_in_stage: true,
                 mouse_position: Point::ZERO,
+                hover_pick_due: false,
                 mouse_cursor: MouseCursor::Arrow,
                 mouse_cursor_needs_check: false,
 
