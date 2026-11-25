@@ -122,6 +122,27 @@ pub fn get_current_label<'gc>(
     Ok(Value::Undefined)
 }
 
+fn frame_labels_for_scene<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    mc: MovieClip<'gc>,
+    scene: &Scene,
+) -> Result<Vec<Value<'gc>>, Error<'gc>> {
+    let frame_label_class = activation.context.avm2.classes().framelabel;
+
+    mc.labels_in_range(scene.start, scene.start + scene.length)
+        .into_iter()
+        .map(|(name, frame)| {
+            // FrameLabel's and EventDispatcher's constructors only store these.
+            let label = scriptobject_allocator(frame_label_class, activation)?;
+            let name = AvmString::new(activation.gc(), name);
+            label.set_slot(frame_label_slots::_NAME, name.into(), activation)?;
+            let local_frame = frame - scene.start + 1;
+            label.set_slot(frame_label_slots::_FRAME, local_frame.into(), activation)?;
+            Ok(Value::from(label))
+        })
+        .collect()
+}
+
 /// Given a scene, produce its name, length, and a list of frame labels.
 ///
 /// The intended purpose of this output is to be sent directly into the
@@ -131,30 +152,11 @@ fn labels_for_scene<'gc>(
     mc: MovieClip<'gc>,
     scene: &Scene,
 ) -> Result<(String, u16, ArrayObject<'gc>), Error<'gc>> {
-    let Scene {
-        name: scene_name,
-        start: scene_start,
-        length: scene_length,
-    } = scene;
-    let frame_label_class = activation.context.avm2.classes().framelabel;
-
-    let frame_labels = mc
-        .labels_in_range(*scene_start, scene_start + scene_length)
-        .into_iter()
-        .map(|(name, frame)| {
-            // FrameLabel's and EventDispatcher's constructors only store these.
-            let label = scriptobject_allocator(frame_label_class, activation)?;
-            let name = AvmString::new(activation.gc(), name);
-            label.set_slot(frame_label_slots::_NAME, name.into(), activation)?;
-            let local_frame = frame - scene_start + 1;
-            label.set_slot(frame_label_slots::_FRAME, local_frame.into(), activation)?;
-            Ok(Value::from(label))
-        })
-        .collect::<Result<ArrayStorage<'gc>, Error<'gc>>>()?;
+    let frame_labels = ArrayStorage::from_args(&frame_labels_for_scene(activation, mc, scene)?);
 
     Ok((
-        scene_name.to_string(),
-        *scene_length,
+        scene.name.to_string(),
+        scene.length,
         ArrayObject::from_storage(activation.context, frame_labels),
     ))
 }
@@ -176,7 +178,17 @@ pub fn get_current_labels<'gc>(
             start: 1,
             length: mc.header_frames(),
         });
-        return Ok(labels_for_scene(activation, mc, &scene)?.2.into());
+        let (from, to) = (scene.start, scene.start + scene.length);
+        let storage = match mc.with_cached_frame_labels(from, to, ArrayStorage::from_args) {
+            Some(storage) => storage,
+            None => {
+                let labels = frame_labels_for_scene(activation, mc, &scene)?;
+                let storage = ArrayStorage::from_args(&labels);
+                mc.set_cached_frame_labels(activation.gc(), from, to, labels.into_boxed_slice());
+                storage
+            }
+        };
+        return Ok(ArrayObject::from_storage(activation.context, storage).into());
     }
 
     Ok(Value::Undefined)

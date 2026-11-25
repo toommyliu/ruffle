@@ -227,6 +227,18 @@ pub struct MovieClipData<'gc> {
 
     /// Show a hand cursor when the clip is in button mode.
     avm2_use_hand_cursor: Cell<bool>,
+
+    frame_label_cache: RefLock<Option<Box<FrameLabelCache<'gc>>>>,
+}
+
+#[derive(Clone, Collect)]
+#[collect(no_drop)]
+struct FrameLabelCache<'gc> {
+    shared: Gc<'gc, MovieClipShared<'gc>>,
+    from: FrameNumber,
+    to: FrameNumber,
+    label_count: usize,
+    labels: Box<[Avm2Value<'gc>]>,
 }
 
 #[derive(Clone, Collect)]
@@ -260,6 +272,7 @@ impl<'gc> MovieClipData<'gc> {
             created_by: OnceCell::new(),
             avm2_enabled: Cell::new(true),
             avm2_use_hand_cursor: Cell::new(true),
+            frame_label_cache: RefLock::new(None),
             button_mode: Cell::new(false),
             last_queued_script_frame: Cell::new(None),
             queued_script_frame: Cell::new(0),
@@ -1159,6 +1172,42 @@ impl<'gc> MovieClip<'gc> {
         values.sort_unstable_by_key(|(_, frame)| *frame);
 
         values
+    }
+
+    pub fn with_cached_frame_labels<R>(
+        self,
+        from: FrameNumber,
+        to: FrameNumber,
+        f: impl FnOnce(&[Avm2Value<'gc>]) -> R,
+    ) -> Option<R> {
+        let cache = self.0.frame_label_cache.borrow();
+        let cache = cache.as_ref()?;
+        let shared = self.0.shared.get();
+        let hit = Gc::ptr_eq(cache.shared, shared)
+            && cache.from == from
+            && cache.to == to
+            && cache.label_count == self.0.shared_cell().frame_labels.len();
+        hit.then(|| f(&cache.labels))
+    }
+
+    pub fn set_cached_frame_labels(
+        self,
+        mc: &Mutation<'gc>,
+        from: FrameNumber,
+        to: FrameNumber,
+        labels: Box<[Avm2Value<'gc>]>,
+    ) {
+        let shared = self.0.shared.get();
+        let label_count = self.0.shared_cell().frame_labels.len();
+        let write = Gc::write(mc, self.0);
+        *unlock!(write, MovieClipData, frame_label_cache).borrow_mut() =
+            Some(Box::new(FrameLabelCache {
+                shared,
+                from,
+                to,
+                label_count,
+                labels,
+            }));
     }
 
     /// Returns the frame count defined in the header.
