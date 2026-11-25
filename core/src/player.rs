@@ -24,7 +24,7 @@ use crate::backend::{
 use crate::compatibility_rules::CompatibilityRules;
 use crate::compatibility_rules::UrlRewriteStage;
 use crate::config::Letterbox;
-use crate::context::{ActionQueue, ActionType, RenderContext, UpdateContext};
+use crate::context::{ActionQueue, ActionType, BitmapCacheMode, RenderContext, UpdateContext};
 use crate::context_menu::{
     BuiltInItemFlags, ContextMenuCallback, ContextMenuItem, ContextMenuState,
 };
@@ -2201,7 +2201,7 @@ impl Player {
                 ui: this.ui.deref(),
                 transform_stack: &mut this.transform_stack,
                 is_offscreen: false,
-                use_bitmap_cache: true,
+                bitmap_cache: BitmapCacheMode::Stage,
                 stage,
                 scale9: None,
                 interpolation,

@@ -50,6 +50,7 @@ pub trait RenderBackend: Any {
         &mut self,
         handle: BitmapHandle,
         commands: CommandList,
+        cache_entries: Vec<BitmapCacheEntry>,
         quality: StageQuality,
         bounds: PixelRegion,
     ) -> Option<Box<dyn SyncHandle>>;

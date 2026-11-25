@@ -508,6 +508,7 @@ impl RenderBackend for WebCanvasRenderBackend {
         &mut self,
         _handle: BitmapHandle,
         _commands: CommandList,
+        _cache_entries: Vec<BitmapCacheEntry>,
         _quality: StageQuality,
         _bounds: PixelRegion,
     ) -> Option<Box<dyn SyncHandle>> {

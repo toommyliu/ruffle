@@ -528,6 +528,93 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         }
     }
 
+    fn draw_cache_entries(&mut self, cache_entries: Vec<BitmapCacheEntry>) {
+        // Caches drawn into the atlas are finished later than their turn, so a
+        // cache that another one draws mustn't be deferred past it.
+        let mut atlas = CacheAtlas::default();
+        for entry in cache_entries {
+            crate::stats::count(&crate::stats::CACHE_DRAWS);
+            if atlas.is_drawn_by(&entry.commands) {
+                self.draw_cache_atlas(std::mem::take(&mut atlas));
+            }
+            let Err(entry) = atlas.try_add(entry) else {
+                continue;
+            };
+            if atlas.draws(&entry.handle) {
+                self.draw_cache_atlas(std::mem::take(&mut atlas));
+            }
+            let texture = as_texture(&entry.handle);
+            let surface = Surface::new(
+                &self.descriptors,
+                self.surface.quality(),
+                texture.texture.width(),
+                texture.texture.height(),
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            if entry.filters.is_empty() {
+                surface.draw_commands(
+                    RenderTargetMode::ExistingWithColor(
+                        texture.texture.clone(),
+                        texture.view().clone(),
+                        wgpu::Color {
+                            r: f64::from(entry.clear.r) / 255.0,
+                            g: f64::from(entry.clear.g) / 255.0,
+                            b: f64::from(entry.clear.b) / 255.0,
+                            a: f64::from(entry.clear.a) / 255.0,
+                        },
+                    ),
+                    &self.descriptors,
+                    &self.meshes,
+                    entry.commands,
+                    &mut self.active_frame.staging_belt,
+                    &self.dynamic_transforms,
+                    &mut self
+                        .profiler
+                        .scope("Draw to CAB", &mut self.active_frame.command_encoder),
+                    LayerRef::None,
+                    &mut self.offscreen_texture_pool,
+                );
+            } else {
+                let mut scope = self
+                    .profiler
+                    .scope("Filters", &mut self.active_frame.command_encoder);
+                // The content goes in a pooled texture rather than the cache,
+                // so the last filter can render straight into the cache (a
+                // one-pass blur has to read somewhere else).
+                let target = surface.draw_commands(
+                    RenderTargetMode::FreshWithColor(wgpu::Color {
+                        r: f64::from(entry.clear.r) / 255.0,
+                        g: f64::from(entry.clear.g) / 255.0,
+                        b: f64::from(entry.clear.b) / 255.0,
+                        a: f64::from(entry.clear.a) / 255.0,
+                    }),
+                    &self.descriptors,
+                    &self.meshes,
+                    entry.commands,
+                    &mut self.active_frame.staging_belt,
+                    &self.dynamic_transforms,
+                    &mut scope.scope("Draw to CAB"),
+                    LayerRef::None,
+                    &mut self.offscreen_texture_pool,
+                );
+                filter_into_cache(
+                    &self.descriptors,
+                    &mut scope,
+                    &mut self.offscreen_texture_pool,
+                    &mut self.active_frame.staging_belt,
+                    FilterSource::for_entire_texture(target.color_texture(), target.color_view()),
+                    entry.filters,
+                    texture,
+                );
+            }
+            // Periodically flush GPU work to prevent OOM when many cache entries
+            // accumulate (e.g. when a large container's cacheAsBitmap is skipped
+            // but its hundreds of children each have their own bitmap caches).
+            self.active_frame.maybe_flush(&self.descriptors);
+        }
+        self.draw_cache_atlas(atlas);
+    }
+
     fn draw_cache_atlas(&mut self, atlas: CacheAtlas) {
         let mut entries = atlas.entries;
         entries.sort_by_key(|entry| std::cmp::Reverse(as_texture(&entry.handle).texture.height()));
@@ -1081,90 +1168,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             );
         }
 
-        // Caches drawn into the atlas are finished later than their turn, so a
-        // cache that another one draws mustn't be deferred past it.
-        let mut atlas = CacheAtlas::default();
-        for entry in cache_entries {
-            crate::stats::count(&crate::stats::CACHE_DRAWS);
-            if atlas.is_drawn_by(&entry.commands) {
-                self.draw_cache_atlas(std::mem::take(&mut atlas));
-            }
-            let Err(entry) = atlas.try_add(entry) else {
-                continue;
-            };
-            if atlas.draws(&entry.handle) {
-                self.draw_cache_atlas(std::mem::take(&mut atlas));
-            }
-            let texture = as_texture(&entry.handle);
-            let surface = Surface::new(
-                &self.descriptors,
-                self.surface.quality(),
-                texture.texture.width(),
-                texture.texture.height(),
-                wgpu::TextureFormat::Rgba8Unorm,
-            );
-            if entry.filters.is_empty() {
-                surface.draw_commands(
-                    RenderTargetMode::ExistingWithColor(
-                        texture.texture.clone(),
-                        texture.view().clone(),
-                        wgpu::Color {
-                            r: f64::from(entry.clear.r) / 255.0,
-                            g: f64::from(entry.clear.g) / 255.0,
-                            b: f64::from(entry.clear.b) / 255.0,
-                            a: f64::from(entry.clear.a) / 255.0,
-                        },
-                    ),
-                    &self.descriptors,
-                    &self.meshes,
-                    entry.commands,
-                    &mut self.active_frame.staging_belt,
-                    &self.dynamic_transforms,
-                    &mut self
-                        .profiler
-                        .scope("Draw to CAB", &mut self.active_frame.command_encoder),
-                    LayerRef::None,
-                    &mut self.offscreen_texture_pool,
-                );
-            } else {
-                let mut scope = self
-                    .profiler
-                    .scope("Filters", &mut self.active_frame.command_encoder);
-                // The content goes in a pooled texture rather than the cache,
-                // so the last filter can render straight into the cache (a
-                // one-pass blur has to read somewhere else).
-                let target = surface.draw_commands(
-                    RenderTargetMode::FreshWithColor(wgpu::Color {
-                        r: f64::from(entry.clear.r) / 255.0,
-                        g: f64::from(entry.clear.g) / 255.0,
-                        b: f64::from(entry.clear.b) / 255.0,
-                        a: f64::from(entry.clear.a) / 255.0,
-                    }),
-                    &self.descriptors,
-                    &self.meshes,
-                    entry.commands,
-                    &mut self.active_frame.staging_belt,
-                    &self.dynamic_transforms,
-                    &mut scope.scope("Draw to CAB"),
-                    LayerRef::None,
-                    &mut self.offscreen_texture_pool,
-                );
-                filter_into_cache(
-                    &self.descriptors,
-                    &mut scope,
-                    &mut self.offscreen_texture_pool,
-                    &mut self.active_frame.staging_belt,
-                    FilterSource::for_entire_texture(target.color_texture(), target.color_view()),
-                    entry.filters,
-                    texture,
-                );
-            }
-            // Periodically flush GPU work to prevent OOM when many cache entries
-            // accumulate (e.g. when a large container's cacheAsBitmap is skipped
-            // but its hundreds of children each have their own bitmap caches).
-            self.active_frame.maybe_flush(&self.descriptors);
-        }
-        self.draw_cache_atlas(atlas);
+        self.draw_cache_entries(cache_entries);
 
         if let Some(frame_output) = &frame_output {
             self.surface.draw_commands_and_copy_to(
@@ -1347,10 +1351,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         &mut self,
         handle: BitmapHandle,
         commands: CommandList,
+        cache_entries: Vec<BitmapCacheEntry>,
         quality: StageQuality,
         bounds: PixelRegion,
     ) -> Option<Box<dyn SyncHandle>> {
         crate::stats::count(&crate::stats::OFFSCREEN_DRAWS);
+        self.draw_cache_entries(cache_entries);
         let texture = as_texture(&handle);
 
         let extent = wgpu::Extent3d {

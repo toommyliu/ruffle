@@ -7,7 +7,7 @@ use crate::bitmap::bitmap_data::{
     LehmerRng, ThresholdOperation,
 };
 use crate::bitmap::turbulence::Turbulence;
-use crate::context::{RenderContext, UpdateContext};
+use crate::context::{BitmapCacheMode, RenderContext, UpdateContext};
 use crate::display_object::{RenderOptions, TDisplayObject};
 use gc_arena::Mutation;
 use ruffle_render::backend::RenderBackend;
@@ -1478,7 +1478,7 @@ pub fn draw<'gc>(
         ui: context.ui,
         transform_stack: &mut transform_stack,
         is_offscreen: true,
-        use_bitmap_cache: false,
+        bitmap_cache: BitmapCacheMode::Draw,
         stage: context.stage,
         scale9: None,
         interpolation: None,
@@ -1552,13 +1552,10 @@ pub fn draw<'gc>(
         dirty_region.union(old);
     }
 
-    assert!(
-        cache_draws.is_empty(),
-        "BitmapData.draw() should not use cacheAsBitmap"
-    );
-    let image = context
-        .renderer
-        .render_offscreen(handle, commands, quality, dirty_region);
+    let image =
+        context
+            .renderer
+            .render_offscreen(handle, commands, cache_draws, quality, dirty_region);
 
     match image {
         Some(sync_handle) => {

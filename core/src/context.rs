@@ -570,6 +570,12 @@ impl Default for ActionQueue<'_> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BitmapCacheMode {
+    Stage,
+    Draw,
+}
+
 /// Shared data used during rendering.
 /// `Player` creates this when it renders a frame and passes it down to display objects.
 ///
@@ -600,8 +606,7 @@ pub struct RenderContext<'a, 'gc> {
     /// Whether we're rendering offscreen. This can disable some logic like Ruffle-side render culling
     pub is_offscreen: bool,
 
-    /// Whether to use cacheAsBitmap, vs drawing everything explicitly
-    pub use_bitmap_cache: bool,
+    pub bitmap_cache: BitmapCacheMode,
 
     /// The current player's stage (including all loaded levels)
     pub stage: Stage<'gc>,

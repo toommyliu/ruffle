@@ -6,7 +6,7 @@ use crate::avm2::{
     Multiname as Avm2Multiname, Object as Avm2Object, StageObject as Avm2StageObject, TObject as _,
     Value as Avm2Value,
 };
-use crate::context::{RenderContext, UpdateContext};
+use crate::context::{BitmapCacheMode, RenderContext, UpdateContext};
 use crate::drawing::Drawing;
 use crate::expiring::{Expiring, ExpiringValues};
 use crate::prelude::*;
@@ -1166,98 +1166,116 @@ pub fn render_base<'gc>(
         None
     };
 
-    let cache_info = if context.use_bitmap_cache && this.is_bitmap_cached() {
-        let mut cache_info: Option<DrawCacheInfo> = None;
+    let cached = match context.bitmap_cache {
+        BitmapCacheMode::Stage => this.is_bitmap_cached(),
+        BitmapCacheMode::Draw => {
+            options.apply_transform && this.filters().iter().any(|filter| !filter.impotent())
+        }
+    };
+    let cache_info = if cached {
         let base_transform = context.transform_stack.transform();
+        let view_matrix = match context.bitmap_cache {
+            BitmapCacheMode::Stage => context.stage.view_matrix(),
+            BitmapCacheMode::Draw => Matrix::IDENTITY,
+        };
         let bounds: Rectangle<Twips> = this.render_bounds_with_transform(
             &base_transform.matrix,
             false, // we want to do the filter growth for this object ourselves, to know the offsets
-            &context.stage.view_matrix(),
+            &view_matrix,
         );
-        let name = this.name();
         let mut filters: Vec<Filter> = this.filters().to_owned();
-        let swf_version = this.swf_version();
         filters.retain(|f| !f.impotent());
 
-        if let Some(cache) = &mut *this.base().bitmap_cache_mut() {
-            let width = bounds.width().to_pixels().ceil().max(0.0);
-            let height = bounds.height().to_pixels().ceil().max(0.0);
-            if width <= u16::MAX as f64 && height <= u16::MAX as f64 {
-                let width = width as u32;
-                let height = height as u32;
-                let mut filter_rect = Rectangle {
-                    x_min: Twips::ZERO,
-                    x_max: Twips::from_pixels_i32(width as i32),
-                    y_min: Twips::ZERO,
-                    y_max: Twips::from_pixels_i32(height as i32),
-                };
-                let stage_matrix = context.stage.view_matrix();
-                for filter in &mut filters {
-                    // Scaling is done by *stage view matrix* only, nothing in-between
-                    filter.scale(stage_matrix.a, stage_matrix.d);
-                    filter_rect = filter.calculate_dest_rect(filter_rect);
+        let width = bounds.width().to_pixels().ceil().max(0.0);
+        let height = bounds.height().to_pixels().ceil().max(0.0);
+        if width <= u16::MAX as f64 && height <= u16::MAX as f64 {
+            let width = width as u32;
+            let height = height as u32;
+            let mut filter_rect = Rectangle {
+                x_min: Twips::ZERO,
+                x_max: Twips::from_pixels_i32(width as i32),
+                y_min: Twips::ZERO,
+                y_max: Twips::from_pixels_i32(height as i32),
+            };
+            for filter in &mut filters {
+                // Scaling is done by the view matrix only, nothing in-between
+                filter.scale(view_matrix.a, view_matrix.d);
+                filter_rect = filter.calculate_dest_rect(filter_rect);
+            }
+            let filter_rect = Rectangle {
+                x_min: filter_rect.x_min.to_pixels().floor() as i32,
+                x_max: filter_rect.x_max.to_pixels().ceil() as i32,
+                y_min: filter_rect.y_min.to_pixels().floor() as i32,
+                y_max: filter_rect.y_max.to_pixels().ceil() as i32,
+            };
+            let draw_offset = Point::new(filter_rect.x_min, filter_rect.y_min);
+            let actual_width = filter_rect.width() as u32;
+            let actual_height = filter_rect.height() as u32;
+            let bitmap = match context.bitmap_cache {
+                BitmapCacheMode::Stage => {
+                    this.base().bitmap_cache_mut().as_mut().and_then(|cache| {
+                        let dirty = cache.is_dirty(&base_transform.matrix, width, height);
+                        if dirty {
+                            let exact_size = filters.iter().any(|filter| {
+                                matches!(
+                                    filter,
+                                    Filter::DisplacementMapFilter(_) | Filter::ShaderFilter(_)
+                                )
+                            });
+                            cache.update(
+                                context.gc_context,
+                                context.renderer,
+                                base_transform.matrix,
+                                width,
+                                height,
+                                actual_width,
+                                actual_height,
+                                draw_offset,
+                                this.swf_version(),
+                                exact_size,
+                            );
+                        }
+                        cache
+                            .bitmap(context.library.cache_textures_mut())
+                            .map(|bitmap| (bitmap, dirty))
+                    })
                 }
-                let filter_rect = Rectangle {
-                    x_min: filter_rect.x_min.to_pixels().floor() as i32,
-                    x_max: filter_rect.x_max.to_pixels().ceil() as i32,
-                    y_min: filter_rect.y_min.to_pixels().floor() as i32,
-                    y_max: filter_rect.y_max.to_pixels().ceil() as i32,
-                };
-                let draw_offset = Point::new(filter_rect.x_min, filter_rect.y_min);
-                if cache.is_dirty(&base_transform.matrix, width, height) {
-                    let exact_size = filters.iter().any(|filter| {
-                        matches!(
-                            filter,
-                            Filter::DisplacementMapFilter(_) | Filter::ShaderFilter(_)
-                        )
-                    });
-                    cache.update(
-                        context.gc_context,
-                        context.renderer,
-                        base_transform.matrix,
-                        width,
-                        height,
-                        filter_rect.width() as u32,
-                        filter_rect.height() as u32,
-                        draw_offset,
-                        swf_version,
-                        exact_size,
-                    );
-                    cache_info = cache
-                        .bitmap(context.library.cache_textures_mut())
-                        .map(|bitmap| DrawCacheInfo {
-                            bitmap,
-                            dirty: true,
-                            base_transform,
-                            bounds,
-                            draw_offset,
-                            filters,
-                        });
-                } else {
-                    cache_info = cache
-                        .bitmap(context.library.cache_textures_mut())
-                        .map(|bitmap| DrawCacheInfo {
-                            bitmap,
-                            dirty: false,
-                            base_transform,
-                            bounds,
-                            draw_offset,
-                            filters,
-                        });
-                }
-            } else {
+                BitmapCacheMode::Draw => NonZero::new(actual_width)
+                    .zip(NonZero::new(actual_height))
+                    .filter(|_| context.renderer.is_offscreen_supported())
+                    .and_then(|(w, h)| context.renderer.create_empty_texture(w, h).ok())
+                    .map(|handle| {
+                        let bitmap = BitmapInfo {
+                            handle,
+                            width: actual_width,
+                            height: actual_height,
+                        };
+                        (bitmap, true)
+                    }),
+            };
+            bitmap.map(|(bitmap, dirty)| DrawCacheInfo {
+                bitmap,
+                dirty,
+                base_transform,
+                bounds,
+                draw_offset,
+                filters,
+            })
+        } else {
+            if context.bitmap_cache == BitmapCacheMode::Stage
+                && let Some(cache) = &mut *this.base().bitmap_cache_mut()
+            {
                 if !cache.warned_for_oversize {
                     tracing::warn!(
                         "Skipping cacheAsBitmap for incredibly large object {:?} ({width} x {height})",
-                        name
+                        this.name()
                     );
                     cache.warned_for_oversize = true;
                 }
                 cache.clear();
-                cache_info = None;
             }
+            None
         }
-        cache_info
     } else {
         None
     };
@@ -1293,7 +1311,7 @@ pub fn render_base<'gc>(
                 ui: context.ui,
                 transform_stack: &mut transform_stack,
                 is_offscreen: true,
-                use_bitmap_cache: true,
+                bitmap_cache: context.bitmap_cache,
                 stage: context.stage,
                 scale9,
                 interpolation: context.interpolation,
@@ -3858,7 +3876,7 @@ mod interpolation_tests {
             ui: update.ui,
             transform_stack: &mut transform_stack,
             is_offscreen: true,
-            use_bitmap_cache: false,
+            bitmap_cache: BitmapCacheMode::Draw,
             stage: update.stage,
             scale9: None,
             interpolation: Some((frame, alpha)),
