@@ -15,6 +15,7 @@ use gc_arena::barrier::{field, unlock};
 use gc_arena::lock::Lock;
 use gc_arena::{Collect, Gc, Mutation};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Collect, Clone, Copy)]
 #[collect(no_drop)]
@@ -40,7 +41,7 @@ struct VTableData<'gc> {
     slot_table: Box<[SlotInfo<'gc>]>,
 
     /// method_table is indexed by `disp_id`
-    method_table: Box<[ClassBoundMethod<'gc>]>,
+    method_table: Rc<[ClassBoundMethod<'gc>]>,
 }
 
 impl PartialEq for VTable<'_> {
@@ -290,6 +291,12 @@ impl<'gc> VTable<'gc> {
         let mut disp_metadata_table = HashMap::new();
         let mut slot_table = Vec::new();
         let mut method_table = Vec::new();
+        let declares_methods = defining_class_def.traits().iter().any(|trait_data| {
+            matches!(
+                trait_data.kind(),
+                TraitKind::Method { .. } | TraitKind::Getter { .. } | TraitKind::Setter { .. }
+            )
+        });
 
         // Subclasses cannot "override" slots in superclasses, so we only
         // maintain the list of slots that were declared by the subclass. At the
@@ -302,7 +309,9 @@ impl<'gc> VTable<'gc> {
             slot_metadata_table = superclass_vtable.0.slot_metadata_table.clone();
             disp_metadata_table = superclass_vtable.0.disp_metadata_table.clone();
             slot_table.extend_from_slice(&superclass_vtable.0.slot_table);
-            method_table.extend_from_slice(&superclass_vtable.0.method_table);
+            if declares_methods {
+                method_table.extend_from_slice(&superclass_vtable.0.method_table);
+            }
 
             first_slot_offset = superclass_vtable.slot_count();
 
@@ -544,7 +553,12 @@ impl<'gc> VTable<'gc> {
             slot_metadata_table,
             disp_metadata_table,
             slot_table: slot_table.into_boxed_slice(),
-            method_table: method_table.into_boxed_slice(),
+            method_table: match superclass_vtable {
+                Some(superclass_vtable) if !declares_methods => {
+                    superclass_vtable.0.method_table.clone()
+                }
+                _ => method_table.into(),
+            },
         })
     }
 
