@@ -34,8 +34,7 @@ jobs:
       - name: Cache Cargo output
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ env.RUNNER_IMAGE_VERSION }}
-          shared-key: "release"
+          shared-key: release-${{ env.RUNNER_IMAGE_VERSION }}
 
       - name: Build
         run: cargo build --release --locked -p ruffle_desktop --no-default-features --features software_video,external_video,lzma,freetype

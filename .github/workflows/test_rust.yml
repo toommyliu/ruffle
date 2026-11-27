@@ -36,8 +36,7 @@ jobs:
       - name: Cache Cargo output
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ env.RUNNER_IMAGE_VERSION }}
-          shared-key: "desktop"
+          shared-key: desktop-${{ env.RUNNER_IMAGE_VERSION }}
           save-if: ${{ github.ref == 'refs/heads/desktop' }}
 
       - name: Install cargo nextest
