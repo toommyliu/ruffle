@@ -28,9 +28,15 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Read runner image version
+        run: |
+          version=$(jq -r '.[] | select(.group == "Runner Image").detail' ~/imagedata.json | sed -n 's/^Version: //p')
+          echo "RUNNER_IMAGE_VERSION=${version:?}" >> "$GITHUB_ENV"
+
       - name: Cache Cargo output
         uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ env.RUNNER_IMAGE_VERSION }}
           shared-key: "desktop"
           save-if: ${{ github.ref == 'refs/heads/desktop' }}
 
