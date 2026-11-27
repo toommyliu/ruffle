@@ -15,6 +15,7 @@ use crate::{
     Descriptors, DroppedTextures, Error, PosColorVertex, PosUvVertex, QueueSyncHandle,
     RenderTarget, SwapChainTarget, Texture, as_texture, format_list, get_backend_names,
 };
+use fnv::FnvHashMap;
 use image::imageops::FilterType;
 use ruffle_render::backend::{
     BitmapCacheEntry, Context3D, Context3DProfile, PixelBenderOutput, PixelBenderTarget,
@@ -529,20 +530,18 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
     }
 
     fn draw_cache_entries(&mut self, cache_entries: Vec<BitmapCacheEntry>) {
-        // Caches drawn into the atlas are finished later than their turn, so a
-        // cache that another one draws mustn't be deferred past it.
+        for level in dependency_levels(cache_entries) {
+            self.draw_cache_level(level);
+        }
+    }
+
+    fn draw_cache_level(&mut self, cache_entries: Vec<BitmapCacheEntry>) {
         let mut atlas = CacheAtlas::default();
         for entry in cache_entries {
             crate::stats::count(&crate::stats::CACHE_DRAWS);
-            if atlas.is_drawn_by(&entry.commands) {
-                self.draw_cache_atlas(std::mem::take(&mut atlas));
-            }
             let Err(entry) = atlas.try_add(entry) else {
                 continue;
             };
-            if atlas.draws(&entry.handle) {
-                self.draw_cache_atlas(std::mem::take(&mut atlas));
-            }
             let texture = as_texture(&entry.handle);
             let surface = Surface::new(
                 &self.descriptors,
@@ -875,32 +874,55 @@ impl CacheAtlas {
         self.entries.push(entry);
         Ok(())
     }
-
-    fn is_drawn_by(&self, commands: &CommandList) -> bool {
-        draws_bitmap(commands, &|bitmap| {
-            self.entries.iter().any(|entry| entry.handle == *bitmap)
-        })
-    }
-
-    fn draws(&self, handle: &BitmapHandle) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| draws_bitmap(&entry.commands, &|bitmap| bitmap == handle))
-    }
 }
 
-fn draws_bitmap(commands: &CommandList, matches: &impl Fn(&BitmapHandle) -> bool) -> bool {
-    commands.commands.iter().any(|command| match command {
-        Command::RenderBitmap { bitmap, .. } | Command::RenderStage3D { bitmap, .. } => {
-            matches(bitmap)
+fn dependency_levels(entries: Vec<BitmapCacheEntry>) -> Vec<Vec<BitmapCacheEntry>> {
+    let key = |handle: &BitmapHandle| Arc::as_ptr(&handle.0).cast::<()>();
+    let mut written = FnvHashMap::<*const (), usize>::default();
+    let mut read = FnvHashMap::<*const (), usize>::default();
+    let mut levels: Vec<Vec<BitmapCacheEntry>> = Vec::new();
+    for entry in entries {
+        let own = key(&entry.handle);
+        let mut reads = Vec::new();
+        visit_bitmaps(&entry.commands, &mut |bitmap| reads.push(key(bitmap)));
+        let level = reads
+            .iter()
+            .chain([&own])
+            .filter_map(|bitmap| written.get(bitmap))
+            .chain(read.get(&own))
+            .map(|level| level + 1)
+            .max()
+            .unwrap_or(0);
+        for bitmap in reads {
+            let last = read.entry(bitmap).or_default();
+            *last = (*last).max(level);
         }
-        Command::RenderAlphaMask {
-            maskee_commands,
-            mask_commands,
-        } => draws_bitmap(maskee_commands, matches) || draws_bitmap(mask_commands, matches),
-        Command::Blend(commands, _) => draws_bitmap(commands, matches),
-        _ => false,
-    })
+        written.insert(own, level);
+        if levels.len() <= level {
+            levels.resize_with(level + 1, Vec::new);
+        }
+        levels[level].push(entry);
+    }
+    levels
+}
+
+fn visit_bitmaps(commands: &CommandList, visit: &mut impl FnMut(&BitmapHandle)) {
+    for command in &commands.commands {
+        match command {
+            Command::RenderBitmap { bitmap, .. } | Command::RenderStage3D { bitmap, .. } => {
+                visit(bitmap)
+            }
+            Command::RenderAlphaMask {
+                maskee_commands,
+                mask_commands,
+            } => {
+                visit_bitmaps(maskee_commands, visit);
+                visit_bitmaps(mask_commands, visit);
+            }
+            Command::Blend(commands, _) => visit_bitmaps(commands, visit),
+            _ => {}
+        }
+    }
 }
 
 fn offset_commands(commands: &mut CommandList, x: swf::Twips, y: swf::Twips) {
